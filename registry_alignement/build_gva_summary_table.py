@@ -254,6 +254,17 @@ def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     if "Type of event" not in df.columns:
         raise SystemExit("Column 'Type of event' not found; cannot filter to ischemic stroke.")
     df = df.loc[df["Type of event"] == "Ischemic stroke"].copy()
+
+    # 3. Collapse same-admission duplicates that the manual 'duplicate' flag
+    # missed. Two registrars sometimes enter the same Case ID with conflicting
+    # answers (different NIHSS, glucose, prior-stroke history, etc.); without
+    # this pass the patient gets half a vote toward each answer in summaries.
+    if "Case ID" in df.columns:
+        n_before_case_dedup = len(df)
+        df = df.drop_duplicates(subset=["Case ID"], keep="first").copy()
+        n_case_dedup_dropped = n_before_case_dedup - len(df)
+        if n_case_dedup_dropped:
+            print(f"[prep]  Case ID dedup: dropped {n_case_dedup_dropped} extra rows")
     n_filtered = len(df)
 
     # 3. Outcome preprocessing (OPSUM outcome_preprocessing, mutated in place).
