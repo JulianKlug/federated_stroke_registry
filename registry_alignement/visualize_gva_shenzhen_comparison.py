@@ -23,7 +23,7 @@ Usage
     python visualize_gva_shenzhen_comparison.py \
         --input /path/to/gva_shenzhen_comparison.xlsx \
         --sheet with_overlap \
-        --output out/gva_shenzhen_variables.png
+        --output out/gva_shenzhen_comparison.png
 """
 from __future__ import annotations
 
@@ -37,12 +37,14 @@ import pandas as pd
 from matplotlib import colormaps, gridspec
 from matplotlib.patches import Patch
 
+from mappings import UNIT_CONVERSIONS
+
 
 DEFAULT_INPUT = Path(
     "/home/klug/temp/shenzen_gva_comp/data/gva_shenzhen_comparison.xlsx"
 )
 DEFAULT_SHEET = "with_overlap"
-DEFAULT_OUTPUT = Path(__file__).resolve().parent / "out" / "gva_shenzhen_variables.png"
+DEFAULT_OUTPUT = Path(__file__).resolve().parent / "out" / "gva_shenzhen_comparison.png"
 
 SKIP_TYPES: set[str] = {"Date", "Free Text"}
 CONTINUOUS_TYPES: set[str] = {"Continuous"}
@@ -272,6 +274,13 @@ def render_bars(ax, items: list[tuple[str, float]], cmap,
 
 def load_rows(input_path: Path, sheet: str) -> pd.DataFrame:
     df = pd.read_excel(input_path, sheet_name=sheet)
+    # Normalize Variable Type case so "continuous" matches "Continuous", etc.
+    # Maps casefolded value -> canonical spelling used by CONTINUOUS_TYPES /
+    # CATEGORICAL_TYPES / SKIP_TYPES; unknown values pass through unchanged.
+    canon = {t.casefold(): t for t in SKIP_TYPES | CONTINUOUS_TYPES | CATEGORICAL_TYPES}
+    df["Variable Type"] = df["Variable Type"].astype("string").str.strip().map(
+        lambda v: canon.get(v.casefold(), v) if isinstance(v, str) else v
+    )
     df = df[~df["Variable Type"].isin(SKIP_TYPES)].reset_index(drop=True)
     return df
 
@@ -302,6 +311,14 @@ def _prepare_rows(df: pd.DataFrame) -> list[dict]:
         if vtype in CONTINUOUS_TYPES:
             entry["shen"] = parse_continuous(row.get("shenzhen_summary_statistic"))
             entry["gva"] = parse_continuous(row.get("geneva_summary_statistic"))
+            # Convert Geneva values into Shenzhen units when a conversion is
+            # defined for this Geneva variable, so both boxes share a scale.
+            gva_var = row.get("geneva_variable_name")
+            if entry["gva"] is not None and isinstance(gva_var, str):
+                conv = UNIT_CONVERSIONS.get(gva_var)
+                if conv:
+                    f = conv["factor"]
+                    entry["gva"] = tuple(v * f for v in entry["gva"])
             entry["height_in"] = CONTINUOUS_ROW_INCHES
         elif vtype in CATEGORICAL_TYPES:
             shen_items = parse_categorical(row.get("shenzhen_summary_statistic"))

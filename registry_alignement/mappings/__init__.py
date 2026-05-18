@@ -4,6 +4,7 @@ Keeping mappings in their own modules lets them be edited without touching
 summarization logic, and makes each mapping easy to review/diff.
 """
 from .gva_to_shenzen import GVA_TO_SHENZEN
+from .unit_conversions import UNIT_CONVERSIONS
 from .units import UNITS
 
-__all__ = ["GVA_TO_SHENZEN", "UNITS"]
+__all__ = ["GVA_TO_SHENZEN", "UNITS", "UNIT_CONVERSIONS"]
