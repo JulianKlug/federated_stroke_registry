@@ -54,7 +54,7 @@ _TIME_RE = re.compile(r"^\s*([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?\s*$")
 # Per-type template describing the shape of `summary_statistic`.
 STAT_FORMAT: dict[str, str] = {
     "binary": "n (%)",
-    "ordinal": "median (Q1-Q3)",
+    "ordinal": "level: n (%); ...",
     "continuous": "median (Q1-Q3)",
     "date": "median date (Q1-Q3)",
     "time": "median time (Q1-Q3)",
@@ -199,8 +199,16 @@ def summarize(series: pd.Series, vtype: str, n_total: int) -> tuple[str, str]:
         return f"{pos} ({pct:.1f}%)", miss_str
 
     if vtype == "ordinal":
-        q1, med, q3 = non_null.quantile([0.25, 0.5, 0.75])
-        return f"{med:.0f} ({q1:.0f}-{q3:.0f})", miss_str
+        int_vals = non_null.astype(int)
+        vc = int_vals.value_counts()
+        n_obs = len(int_vals)
+        lo, hi = int(int_vals.min()), int(int_vals.max())
+        parts = [
+            f"{level}: {int(vc.get(level, 0))} "
+            f"({int(vc.get(level, 0)) / n_obs * 100:.1f}%)"
+            for level in range(lo, hi + 1)
+        ]
+        return "; ".join(parts), miss_str
 
     if vtype == "continuous":
         q1, med, q3 = non_null.quantile([0.25, 0.5, 0.75])
@@ -231,7 +239,7 @@ def summarize(series: pd.Series, vtype: str, n_total: int) -> tuple[str, str]:
     if len(vc) <= 5:
         parts = [f"{v}: {c} ({c / n_obs * 100:.1f}%)" for v, c in vc.items()]
         return "; ".join(parts), miss_str
-    top = vc.head(3)
+    top = vc.head(5)
     parts = [f"{v}: {c} ({c / n_obs * 100:.1f}%)" for v, c in top.items()]
     return f"{len(vc)} categories; top: " + "; ".join(parts), miss_str
 
@@ -287,6 +295,14 @@ def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
             (df["3M mRS"] != 6) & df["3M mRS"].notna() & df["3M Death"].isna(),
             "3M Death",
         ] = "no"
+
+    # 4. Collapse TOAST "Unknown etiology" subtypes (with/despite evaluation)
+    # into a single "Unknown etiology" bucket for the summary.
+    if "Etiology TOAST" in df.columns:
+        mask_unknown = df["Etiology TOAST"].astype("string").str.startswith(
+            "Unknown etiology", na=False
+        )
+        df.loc[mask_unknown, "Etiology TOAST"] = "Unknown etiology"
 
     return df, n_raw, n_filtered
 
