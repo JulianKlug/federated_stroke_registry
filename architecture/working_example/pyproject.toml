@@ -11,10 +11,16 @@ dependencies = [
     "flwr[simulation]>=1.28.0",
     "flwr-datasets>=0.6.0",
     "xgboost>=2.0.0",
+    "scikit-learn>=1.3",
+    "pandas>=2.0",
+    "openpyxl>=3.1",
 ]
 
+[tool.hatch.build]
+exclude = [".venv", "uv.lock"]
+
 [tool.hatch.build.targets.wheel]
-packages = ["."]
+packages = ["quickstart_xgboost"]
 
 [tool.flwr.app]
 publisher = "flwrlabs"

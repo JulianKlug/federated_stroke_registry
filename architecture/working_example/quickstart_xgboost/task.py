@@ -82,7 +82,7 @@ def create_registry_case_identification_column(df):
 
 def load_data_gva(context: Context):
     """Load GVA data."""
-    data_path = Path('/Users/jk/stroke_datasets/stroke_registry_post_hoc_modified.xlsx')
+    data_path = Path('/mnt/hdd1/datasets/GVA_stroke_registry/stroke_registry_post_hoc_modified.xlsx')
     # data_path = Path(context.node_config["data-path"])
 
     if not data_path.exists():
