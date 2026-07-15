@@ -68,51 +68,38 @@ def generate_splits(data, outcome, test_size, seed,
 
     return train_set, test_set, num_train, num_test
 
-def create_registry_case_identification_column(df):
-    # Identify each case with case id (patient id + eds last 4 digits)
-    df = df.copy()
-    if 'patient_id' not in df.columns:
-        df['patient_id'] = df['Case ID'].apply(lambda x: x[8:-4]).astype(str)
-    if 'EDS_last_4_digits' not in df.columns:
-        df['EDS_last_4_digits'] = df['Case ID'].apply(lambda x: x[-4:]).astype(str)
-    case_identification_column = df['patient_id'].astype(str) \
-                                 + '_' + df['EDS_last_4_digits'].str.zfill(4).astype(str)
-    return case_identification_column
-
-
 def load_data_gva(context: Context):
-    """Load GVA data."""
-    data_path = Path('/mnt/hdd1/datasets/GVA_stroke_registry/stroke_registry_post_hoc_modified.xlsx')
-    # data_path = Path(context.node_config["data-path"])
+    """Load GVA data from the parquet file at the SuperNode's configured path.
+
+    Contract: read the file at `context.node_config["data-path"]`. No
+    cross-SuperNode partitioning inside — the file is authoritative. A local
+    train/valid holdout is still built here because `client_app.py`'s
+    `@evaluate()` needs a `valid_dmatrix`.
+    """
+    data_path = Path(context.node_config["data-path"])
 
     if not data_path.exists():
         raise FileNotFoundError(f"Local dataset not found: {data_path}")
 
-    df = pd.read_excel(data_path)   
-    df['case_admission_id'] = create_registry_case_identification_column(df)
-
-    # todo: read features and target from config instead of hardcoding
     feature_cols = ['Age (calc.)', 'NIH on admission']
     target_col = '3M Death'
-    data_df = df[['case_admission_id', *feature_cols, target_col]].copy()
-   
-    # todo: features & labels should be preprocessed before, along with dropping of duplicates
-    # preprocess target col to binary labels from 'yes'/'no' to 1/0
-    data_df[target_col] = data_df[target_col].apply(lambda x: 1 if x == 'yes' else 0 if x == 'no' else np.nan)
-        
-    n_pre_drop = data_df.case_admission_id.nunique()
-    # drop rows with NaN values in the target column
-    data_df = data_df.dropna(subset=[target_col])
-    n_post_drop = data_df.case_admission_id.nunique()
-    print(f"Dropped {n_pre_drop - n_post_drop} cids with NaN values in the target column '{target_col}', for a remaining of {n_post_drop} unique cases.")
 
-    # Train/test splitting - split around ids
-    train_df, valid_df, num_train, num_val = generate_splits(data_df, outcome=target_col, test_size=0.2, seed=42)    
-    # drop columns except features and target
+    data_df = pd.read_parquet(data_path)
+
+    n_rows = len(data_df)
+    n_patients = data_df['case_admission_id'].str.split('_').str[0].nunique()
+    label_balance = data_df[target_col].mean()
+    print(
+        f"load_data_gva({data_path.name}): rows={n_rows}, "
+        f"unique_patients={n_patients}, label_balance={label_balance:.4f}"
+    )
+
+    train_df, valid_df, num_train, num_val = generate_splits(
+        data_df, outcome=target_col, test_size=0.2, seed=42
+    )
     train_df = train_df[feature_cols + [target_col]]
     valid_df = valid_df[feature_cols + [target_col]]
 
-    # Reformat data to DMatrix for xgboost
     train_dmatrix = xgb.DMatrix(train_df[feature_cols], label=train_df[target_col])
     valid_dmatrix = xgb.DMatrix(valid_df[feature_cols], label=valid_df[target_col])
 

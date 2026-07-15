@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fed-stroke"
+version = "0.1.0"
+description = "Federated learning for stroke prognostication across GVA and Shenzhen cohorts."
+license = {file = "LICENSE"}
+requires-python = ">=3.12"
+dependencies = [
+    "flwr[simulation]>=1.28.0",
+    "flwr-datasets>=0.6.0",
+    "xgboost>=2.0.0",
+    "scikit-learn>=1.3",
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "pyarrow>=15",
+]
+
+[tool.hatch.build]
+exclude = [".venv", "uv.lock"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["fed_stroke"]
+
+[tool.flwr.app]
+publisher = "klug"
+fab-format-version = 1
+flwr-version-target = "1.31.0"
+
+[tool.flwr.app.components]
+serverapp = "fed_stroke.server_app:app"
+clientapp = "fed_stroke.client_app:app"
+
+[tool.flwr.app.config]
+num-server-rounds = 3
+fraction-train = 1.0
+fraction-evaluate = 1.0
+local-epochs = 1
+save-model = false
+
+# XGBoost parameters
+params.objective = "binary:logistic"
+params.eta = 0.1 # Learning rate
+params.max-depth = 8
+params.eval-metric = "auc"
+params.nthread = 16
+params.num-parallel-tree = 1
+params.subsample = 1
+params.tree-method = "hist"

@@ -32,10 +32,6 @@ def _local_boost(bst_input, num_local_round, train_dmatrix):
 
 @app.train()
 def train(msg: Message, context: Context) -> Message:
-    # Load model and data
-    partition_id = context.node_config["partition-id"]
-    num_partitions = context.node_config["num-partitions"]
-    # train_dmatrix, _, num_train, _ = load_data(partition_id, num_partitions)
     train_dmatrix, _, num_train, _ = load_data_gva(context)
 
     # Read from run config
@@ -80,10 +76,6 @@ def train(msg: Message, context: Context) -> Message:
 
 @app.evaluate()
 def evaluate(msg: Message, context: Context) -> Message:
-    # Load model and data
-    partition_id = context.node_config["partition-id"]
-    num_partitions = context.node_config["num-partitions"]
-    # _, valid_dmatrix, _, num_val = load_data(partition_id, num_partitions)
     _, valid_dmatrix, _, num_val = load_data_gva(context)
 
     # Load config
