@@ -34,18 +34,34 @@ serverapp = "fed_stroke.server_app:app"
 clientapp = "fed_stroke.client_app:app"
 
 [tool.flwr.app.config]
-num-server-rounds = 3
+# num-server-rounds is intentionally NOT a config key: it is derived in code
+# from `total-trees` per strategy (server_app.derive_num_rounds), so the matched
+# tree budget cannot be silently broken by a forgotten flag.
+train-method = "bagging"   # "bagging" | "cyclic"
+cyclic-order = "forward"   # "forward" | "reverse"; only read when train-method = "cyclic"
+total-trees = 40           # final ensemble size; num-server-rounds is DERIVED from this
+num-sites = 2              # participating SuperNodes; drives round derivation + min_available_nodes
 fraction-train = 1.0
 fraction-evaluate = 1.0
 local-epochs = 1
 save-model = false
+model-dir = "out/models"  # where save-model writes final_model.json (relative = ServerApp CWD)
 
-# XGBoost parameters
+# XGBoost parameters (architecture §3; matched across both strategies)
 params.objective = "binary:logistic"
 params.eta = 0.1 # Learning rate
-params.max-depth = 8
+params.max-depth = 4
+params.min-child-weight = 5
 params.eval-metric = "auc"
 params.nthread = 16
 params.num-parallel-tree = 1
-params.subsample = 1
+params.subsample = 0.8
+params.colsample-bytree = 0.8
 params.tree-method = "hist"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

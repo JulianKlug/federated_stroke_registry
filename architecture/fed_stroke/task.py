@@ -6,6 +6,8 @@ import xgboost as xgb
 from flwr.app import Context
 from sklearn.model_selection import train_test_split
 
+from fed_stroke.schema import FEATURE_COLS, TARGET_COL
+
 
 def generate_splits(data, outcome, test_size, seed,
                     test_pids_path=None, train_pids_path=None):
@@ -80,8 +82,8 @@ def load_data_gva(context: Context):
     if not data_path.exists():
         raise FileNotFoundError(f"Local dataset not found: {data_path}")
 
-    feature_cols = ['Age (calc.)', 'NIH on admission']
-    target_col = '3M Death'
+    feature_cols = FEATURE_COLS
+    target_col = TARGET_COL
 
     data_df = pd.read_parquet(data_path)
 
