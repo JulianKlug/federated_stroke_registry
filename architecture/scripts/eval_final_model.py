@@ -20,15 +20,18 @@ import xgboost as xgb
 # Make `fed_stroke` importable regardless of CWD (script lives in scripts/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from fed_stroke.metrics import compute_binary_metrics  # noqa: E402
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL  # noqa: E402
 from fed_stroke.task import generate_splits  # noqa: E402
 
 
-def _site_auc(bst: xgb.Booster, data_path: Path) -> float:
-    """Rebuild the identical in-run validation split and return its AUC.
+def _site_metrics(bst, data_path, operating_point, n_boot, boot_seed) -> dict:
+    """Rebuild the identical in-run validation split and return the full metric set.
 
     Mirrors client_app.evaluate: same split (`generate_splits`, test_size=0.2,
-    seed=42) and the same `eval_set` AUC, so numbers are comparable to the FL run.
+    seed=42) and the *same* `compute_binary_metrics` on `bst.predict`, so a saved
+    model's offline `auc_roc` matches its federated final-round `auc_roc/<site>`
+    to full precision given matching operating-point / n-boot / boot-seed.
     """
     data_df = pd.read_parquet(data_path)
     _, valid_df, _, _ = generate_splits(
@@ -36,11 +39,11 @@ def _site_auc(bst: xgb.Booster, data_path: Path) -> float:
     )
     valid_dmatrix = xgb.DMatrix(valid_df[FEATURE_COLS], label=valid_df[TARGET_COL])
 
-    eval_results = bst.eval_set(
-        evals=[(valid_dmatrix, "valid")],
-        iteration=bst.num_boosted_rounds() - 1,
+    y_prob = bst.predict(valid_dmatrix)
+    y_true = valid_dmatrix.get_label()
+    return compute_binary_metrics(
+        y_true, y_prob, operating_point, n_boot=n_boot, boot_seed=boot_seed
     )
-    return float(eval_results.split("\t")[1].split(":")[1])
 
 
 def main() -> None:
@@ -59,6 +62,13 @@ def main() -> None:
         required=True,
         help="Assert the model has exactly this many boosted rounds (budget check)",
     )
+    # Defaults mirror pyproject config (§4.5) so numbers match the FL run exactly.
+    parser.add_argument("--operating-point", type=float, default=0.5,
+                        help="Shared fixed confusion-matrix threshold (config default 0.5)")
+    parser.add_argument("--n-boot", type=int, default=1000,
+                        help="Bootstrap resamples for the 95%% CIs (config default 1000)")
+    parser.add_argument("--boot-seed", type=int, default=0,
+                        help="RNG seed for reproducible bootstrap CIs (config default 0)")
     args = parser.parse_args()
 
     bst = xgb.Booster()
@@ -72,11 +82,25 @@ def main() -> None:
     )
     print(f"{args.model.name}: {n_trees} trees (expected {args.expected_trees}) OK\n")
 
-    print(f"{'model':<28} {'site':<26} {'AUC':>8}")
-    print("-" * 64)
+    header = (
+        f"{'site':<26} {'auc_roc':>8} {'auc_roc_ci':>19} {'auc_pr':>8} "
+        f"{'brier':>8} {'fixed(tn,fp,fn,tp)':>20} {'youden(tn,fp,fn,tp)':>21} "
+        f"{'n_pos':>6} {'n':>6}"
+    )
+    print(header)
+    print("-" * len(header))
     for data_path in args.data:
-        auc = _site_auc(bst, data_path)
-        print(f"{args.model.name:<28} {data_path.name:<26} {auc:>8.4f}")
+        m = _site_metrics(
+            bst, data_path, args.operating_point, args.n_boot, args.boot_seed
+        )
+        ci = f"[{m['auc_roc_lo']:.4f},{m['auc_roc_hi']:.4f}]"
+        fixed = f"({m['tn']},{m['fp']},{m['fn']},{m['tp']})"
+        youden = f"({m['tn_j']},{m['fp_j']},{m['fn_j']},{m['tp_j']})"
+        print(
+            f"{data_path.name:<26} {m['auc_roc']:>8.4f} {ci:>19} "
+            f"{m['auc_pr']:>8.4f} {m['brier']:>8.4f} {fixed:>20} {youden:>21} "
+            f"{m['n_pos']:>6} {m['n']:>6}"
+        )
 
 
 if __name__ == "__main__":

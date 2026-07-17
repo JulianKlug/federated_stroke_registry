@@ -1,6 +1,7 @@
 """fed_stroke: ServerApp — orchestrates FedXgbBagging / FedXgbCyclic across SuperNodes."""
 
-from logging import INFO
+import json
+from logging import INFO, WARNING
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,12 @@ from flwr.common.config import unflatten_dict
 from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedXgbBagging
 
+from fed_stroke.metrics import (
+    nest_site_metrics,
+    render_run_report,
+    site_stratified_evaluate_metrics,
+    validate_metrics_artifact,
+)
 from fed_stroke.strategies import OrderedFedXgbCyclic
 from fed_stroke.task import replace_keys
 
@@ -54,6 +61,7 @@ def build_strategy(run_config):
             fraction_train=run_config["fraction-train"],
             fraction_evaluate=run_config["fraction-evaluate"],
             min_available_nodes=run_config["num-sites"],
+            evaluate_metrics_aggr_fn=site_stratified_evaluate_metrics,
         )
     if train_method == "cyclic":
         return OrderedFedXgbCyclic(
@@ -61,8 +69,53 @@ def build_strategy(run_config):
             fraction_train=run_config["fraction-train"],
             fraction_evaluate=run_config["fraction-evaluate"],
             min_available_nodes=run_config["num-sites"],
+            evaluate_metrics_aggr_fn=site_stratified_evaluate_metrics,
         )
     raise ValueError(f"Unknown train-method: {train_method}")
+
+
+def _fmt(value, spec=".4f"):
+    """Format an artifact value for the log table (None <- NaN -> 'n/a')."""
+    return "n/a" if value is None else format(value, spec)
+
+
+def log_final_round_table(nested: dict) -> None:
+    """Log the final round's per-site headline metrics so the run is legible
+    without opening the JSON.
+
+    Flags an all-zero fixed-point confusion matrix as a degenerate-threshold
+    warning (§7): 0.5 on a rare outcome yields tp≈fp≈0, so the Youden-J cells
+    are the informative pair there.
+    """
+    if not nested:
+        return
+    final_round = max(nested)
+    log(INFO, "Final round (%s) per-site metrics:", final_round)
+    log(
+        INFO,
+        "  %-26s %8s %8s %8s %-19s %-19s %6s %6s",
+        "site", "auc_roc", "auc_pr", "brier",
+        "fixed(tn,fp,fn,tp)", "youden(tn,fp,fn,tp)", "n_pos", "n",
+    )
+    for site, m in sorted(nested[final_round].items()):
+        auc_roc = _fmt(m.get("auc_roc"))
+        ci = f"[{_fmt(m.get('auc_roc_lo'))},{_fmt(m.get('auc_roc_hi'))}]"
+        fixed = f"({m['tn']},{m['fp']},{m['fn']},{m['tp']})"
+        youden = f"({m['tn_j']},{m['fp_j']},{m['fn_j']},{m['tp_j']})"
+        log(
+            INFO,
+            "  %-26s %8s %8s %8s %-19s %-19s %6s %6s  ci=%s",
+            site, auc_roc, _fmt(m.get("auc_pr")), _fmt(m.get("brier")),
+            fixed, youden, m["n_pos"], m["num-examples"], ci,
+        )
+        if m["fp"] == 0 and m["tp"] == 0:
+            log(
+                WARNING,
+                "  degenerate fixed-point confusion for %s: no positives "
+                "predicted at the fixed threshold (rare outcome); read the "
+                "Youden-J cells instead.",
+                site,
+            )
 
 
 @app.main()
@@ -103,6 +156,37 @@ def main(grid: Grid, context: Context) -> None:
         initial_arrays=arrays,
         num_rounds=num_rounds,
     )
+
+    # Persist the site-stratified metrics artifact (§4.3). All decode/validate
+    # steps are library calls into metrics.py; main() only orchestrates + writes.
+    nested = nest_site_metrics(result.evaluate_metrics_clientapp)  # {round:{site:{metric}}}, NaN->None
+    validate_metrics_artifact(nested)                              # contract check, raises on bad shape
+    log_final_round_table(nested)                                  # headline numbers into the server log
+
+    metrics_dir = Path(context.run_config["metrics-dir"])
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    tag = train_method + (
+        f"_{context.run_config['cyclic-order']}" if train_method == "cyclic" else ""
+    )
+    metrics_path = metrics_dir / f"{tag}.json"
+    # allow_nan=False: NaNs are already None; any stray NaN must raise, never
+    # write the invalid bare `NaN` token that jq / JS / strict parsers reject.
+    metrics_path.write_text(json.dumps(nested, indent=2, allow_nan=False))
+    log(INFO, "Wrote site-stratified metrics artifact to %s", metrics_path)
+
+    # Write a human-readable per-run report beside the JSON. Convenience only —
+    # the JSON stays the source of truth — so a failure here must not sink a
+    # finished run.
+    try:
+        report_path = metrics_dir / f"{tag}.md"
+        report_path.write_text(
+            render_run_report(
+                tag, nested, operating_point=context.run_config["operating-point"]
+            )
+        )
+        log(INFO, "Wrote per-run metrics report to %s", report_path)
+    except Exception as exc:  # noqa: BLE001 - report is best-effort
+        log(WARNING, "Could not write per-run metrics report: %s", exc)
 
     if context.run_config["save-model"]:
         # Save final model to disk

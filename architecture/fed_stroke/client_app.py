@@ -16,6 +16,7 @@ from flwr.app import (
 from flwr.clientapp import ClientApp
 from flwr.common.config import unflatten_dict
 
+from fed_stroke.metrics import compute_binary_metrics
 from fed_stroke.task import load_data_gva, replace_keys
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -109,18 +110,30 @@ def evaluate(msg: Message, context: Context) -> Message:
     global_model = bytearray(msg.content["arrays"]["0"].numpy().tobytes())
     bst.load_model(global_model)
 
-    # Run evaluation
-    eval_results = bst.eval_set(
-        evals=[(valid_dmatrix, "valid")],
-        iteration=bst.num_boosted_rounds() - 1,
+    # Full §4 metric set from raw probabilities (AUC-PR and Brier need
+    # probabilities, so compute from predict, not eval_set).
+    y_prob = bst.predict(valid_dmatrix)
+    y_true = valid_dmatrix.get_label()
+    metrics = compute_binary_metrics(
+        y_true,
+        y_prob,
+        context.run_config["operating-point"],
+        n_boot=context.run_config["n-boot"],
+        boot_seed=context.run_config["boot-seed"],
     )
-    auc = float(eval_results.split("\t")[1].split(":")[1])
+    # `n` (row count from compute_binary_metrics) IS the weighting quantity;
+    # rename it in place to the key flwr's consistency/weighting path expects so
+    # the reply carries exactly one row-count value, not a duplicate.
+    metrics["num-examples"] = metrics.pop("n")
 
-    # Construct and return reply Message
-    metrics = {
-        "auc": auc,
-        "num-examples": num_val,
-    }
-    metric_record = MetricRecord(metrics)
-    content = RecordDict({"metrics": metric_record})
+    # Same site id the site_info query already reports (client_app.py:47).
+    site = Path(context.node_config["data-path"]).name
+
+    # Construct and return reply Message. The site string travels in a
+    # ConfigRecord (MetricRecord values are numeric-only in flwr); the custom
+    # server aggregator reads it to keep per-site metrics stratified.
+    content = RecordDict({
+        "metrics": MetricRecord(metrics),
+        "config": ConfigRecord({"site": site}),
+    })
     return Message(content=content, reply_to=msg)

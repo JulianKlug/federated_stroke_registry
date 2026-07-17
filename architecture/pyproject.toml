@@ -47,6 +47,12 @@ local-epochs = 1
 save-model = false
 model-dir = "out/models"  # where save-model writes final_model.json (relative = ServerApp CWD)
 
+# Evaluation harness (roadmap 1.c)
+operating-point = 0.5        # shared FIXED threshold for the cross-site-comparable confusion matrix (§4.1)
+metrics-dir = "out/metrics"  # where the per-run site-stratified JSON is written (relative = ServerApp CWD)
+n-boot = 1000                # bootstrap resamples for per-metric 95% CIs (§4.1); determinism via boot-seed
+boot-seed = 0                # RNG seed for reproducible bootstrap CIs
+
 # XGBoost parameters (architecture §3; matched across both strategies)
 params.objective = "binary:logistic"
 params.eta = 0.1 # Learning rate

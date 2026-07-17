@@ -1,6 +1,14 @@
 # TODOS
 
-## 1.c should reuse 1.b's split + site-mapping helpers (do not re-derive)
+## ✅ DONE (1.c, 2026-07-17) — 1.c should reuse 1.b's split + site-mapping helpers (do not re-derive)
+
+Resolved by the 1.c evaluation harness: `fed_stroke/metrics.py` and both the
+client (`client_app.evaluate`) and offline scorer (`scripts/eval_final_model.py`)
+share one split via `task.generate_splits` (`test_size=0.2`, `seed=42`) and the
+`schema.py` column contract; the offline scorer was extended, not rewritten; the
+server reads the site label through the existing `@app.query` site channel.
+
+<details><summary>original item</summary>
 
 **What:** When implementing roadmap 1.c (site-stratified AUC-ROC / AUC-PR /
 Brier / confusion-matrix harness), reuse the seams 1.b introduces rather than
@@ -26,3 +34,5 @@ site mapping are the reusable core. Start 1.c by importing from `task.py` and
 extending `eval_final_model.py`, not by writing a fresh split.
 
 **Depends on / blocked by:** 1.b implemented and merged.
+
+</details>

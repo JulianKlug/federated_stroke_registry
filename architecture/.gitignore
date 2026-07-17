@@ -1,0 +1,16 @@
+# This file is load-bearing for `flwr run`, not just for git.
+#
+# `flwr run` builds a FAB (Flower App Bundle) from this app directory. Its
+# packager (flwr.cli.utils.filter_paths_for_publish) reads the .gitignore *in
+# this directory* — it does NOT consult the repo-root .gitignore — and then
+# rejects any bundled path deeper than MAX_DIR_DEPTH (10). `.venv/` contains
+# vendored packages nested well past that (e.g.
+# .venv/lib/python3.12/site-packages/numpy-*.dist-info/licenses/numpy/_core/src/
+# npysort/x86-simd-sort/LICENSE.md), so without the `.venv/` line below the FAB
+# build fails with "exceeds the maximum directory depth of 10" before the run
+# can start. Keep `.venv/` here.
+.venv/
+out/
+.federation/
+__pycache__/
+*.py[cod]

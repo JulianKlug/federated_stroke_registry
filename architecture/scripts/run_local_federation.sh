@@ -14,6 +14,18 @@
 # After 'start', run the matrix from architecture/ against the `local-deployment`
 # federation, e.g.:
 #   flwr run . local-deployment --run-config "save-model=true"
+#
+# NOTE: `flwr run` bundles this app dir into a FAB and reads THIS dir's
+# .gitignore (not the repo-root one) to decide what to include, then rejects any
+# path deeper than 10. The `.venv/` entry in architecture/.gitignore is what
+# keeps the venv out of the bundle — without it the FAB build fails with
+# "exceeds the maximum directory depth of 10". See that file's header.
+#
+# Also pass metrics-dir as an ABSOLUTE path (like model-dir): both are relative
+# to the ServerApp CWD by default, which is not this directory, so a relative
+# value writes the artifact somewhere unexpected. e.g.:
+#   flwr run . local-deployment --run-config \
+#     "save-model=true model-dir='${PWD}/../out/models' metrics-dir='${PWD}/../out/metrics'"
 set -euo pipefail
 
 ARCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
