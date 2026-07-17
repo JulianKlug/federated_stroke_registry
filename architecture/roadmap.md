@@ -38,8 +38,9 @@ inside the load function is deliberately avoided: it would be throwaway code
 that does not match the final workflow. Both aggregation strategies are
 implemented and kept in parallel — no winner is picked here.
 
-- [ ] 1.a Bootstrap the distributed topology on Geneva. Ordered sub-steps
-  so that each intermediate is independently verifiable:
+- [x] 1.a Bootstrap the **functional** distributed topology on Geneva
+  (insecure/loopback — the mTLS hardening is split out to 1.e). Ordered
+  sub-steps so that each intermediate is independently verifiable:
   1. **Verify the current working example runs on this dev machine.**
      Update the hardcoded path in `task.py:85` to the local Geneva Excel
      (`/mnt/hdd1/datasets/GVA_stroke_registry`, per `CLAUDE.md`); run
@@ -48,43 +49,45 @@ implemented and kept in parallel — no winner is picked here.
      distinguishable from preexisting state.
   2. **Data preparation.** One-off script produces `geneva_half_A.parquet`
      and `geneva_half_B.parquet` via patient-ID-stratified 50/50 split
-     with fixed seed. Parquet, not Excel — the per-round reload cost in
-     the working example is otherwise wasteful (see `task.py:83`). Both
-     files are inspectable artifacts before any FL code changes.
-  3. **Config-driven data path, single SuperNode.** Rewrite
-     `load_data_gva` to read from `context.node_config["data-path"]`
-     (uncomment `task.py:86`, delete the hardcoded path on line 85). Run
-     with a single SuperNode pointing at `geneva_half_A.parquet`; confirm
-     a reasonable AUC number and that the load function's contract is
-     now "read the file at the configured path" — no partitioning inside.
-  4. **Distributed topology with mTLS.** 1 `SuperLink` / 2 `SuperNode`s
-     with mTLS, certificate pinning, short-lived credentials (architecture
-     §6.1), running locally. Each SuperNode's `data-path` is set per-node
-     in `pyproject.toml` under `[tool.flwr.federations.<name>]`, pointing
-     at its half. First genuinely federated run on Geneva. This is the
-     same contract Shenzhen will follow with its own file later; nothing
-     here is throwaway. Verify: each SuperNode prints its row count,
-     unique patient count, and label balance; disjoint patient sets;
-     roughly equal size; similar label balance; federated round completes
-     end to end.
-- [ ] 1.b Implement both `FedXgbBagging` and `FedXgbCyclic` with matched
+     with fixed seed (`preprocessing/prepare_geneva_halves.py`). Parquet,
+     not Excel — the per-round reload cost in the working example is
+     otherwise wasteful. Both files are inspectable artifacts before any
+     FL code changes.
+  3. **Config-driven data path.** `load_data_gva` reads from
+     `context.node_config["data-path"]`; no hardcoded path, no
+     partitioning inside — the load contract is "read the file at the
+     configured path." Runs across a 1-SuperLink / 2-SuperNode local
+     topology (`scripts/run_local_federation.sh`), each SuperNode pinned
+     to one half; each prints its row count, unique patient count, and
+     label balance, and a federated round completes end to end.
+- [x] 1.b Implement both `FedXgbBagging` and `FedXgbCyclic` with matched
   hyperparameters (architecture §3) and matched total tree budget.
   Alternate cyclic order across runs to check for last-site bias.
-- [ ] 1.c Evaluation harness: site-stratified AUC-ROC, AUC-PR, Brier, and
+- [x] 1.c Evaluation harness: site-stratified AUC-ROC, AUC-PR, Brier, and
   confusion matrix at the operating point, per architecture §4.
 - [ ] 1.d Federated-vs-pooled correctness check on Geneva 50/50 partition.
   Federated result must be within 3 AUC points of pooled Geneva xgboost.
   Purpose: catch silent data-partitioning, DMatrix, or tree-serialization
   bugs before any downstream DP result is measured against them.
-- [ ] 1.e Docker smoke build. Dockerfile compiles, container runs the
+- [ ] 1.e Secure the topology (architecture §6.1). Replace the insecure
+  local run with 1 `SuperLink` / 2 `SuperNode`s over **mTLS**, with
+  **certificate pinning** and **short-lived credentials** (node
+  authentication). Move each SuperNode's `data-path` into `pyproject.toml`
+  under `[tool.flwr.federations.<name>]` (it currently lives in a CLI
+  `--node-config` arg + `~/.flwr/config.toml`). This is the same secure
+  contract Shenzhen will follow (1.3.a/1.3.b), practised locally to
+  de-risk onboarding; nothing here is throwaway. Verify: disjoint patient
+  sets across the two halves, roughly equal size, similar label balance,
+  and a federated round completes end to end over the mTLS channel.
+- [ ] 1.f Docker smoke build. Dockerfile compiles, container runs the
   pipeline end-to-end on the dev machine. Full Shenzhen-ready packaging
   (version pinning, clean-bootstrap test on a non-dev machine) is
   deferred to Phase v1.3, but building the image once here catches
   Dockerfile bugs long before Shenzhen go-live.
 
 **Acceptance for v1:** both strategies implemented and pass 1.d; evaluation
-harness produces the three metrics; Dockerfile builds and runs the pipeline
-locally.
+harness produces the three metrics; topology runs over mTLS (1.e); Dockerfile
+builds and runs the pipeline locally (1.f).
 
 ### Phase v1.1/v1.2 — DP + HPO development phase (real Geneva data)
 
