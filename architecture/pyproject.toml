@@ -55,6 +55,7 @@ boot-seed = 0                # RNG seed for reproducible bootstrap CIs
 
 # XGBoost parameters (architecture §3; matched across both strategies)
 params.objective = "binary:logistic"
+params.seed = 0 # pinned so the 1.d pooled reference trains deterministically (XGBoost default is already 0, so federated numbers are unchanged)
 params.eta = 0.1 # Learning rate
 params.max-depth = 4
 params.min-child-weight = 5

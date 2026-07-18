@@ -14,36 +14,12 @@ import argparse
 import sys
 from pathlib import Path
 
-import pandas as pd
 import xgboost as xgb
 
 # Make `fed_stroke` importable regardless of CWD (script lives in scripts/).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fed_stroke.metrics import compute_binary_metrics  # noqa: E402
-from fed_stroke.schema import FEATURE_COLS, TARGET_COL  # noqa: E402
-from fed_stroke.task import generate_splits  # noqa: E402
-
-
-def _site_metrics(bst, data_path, operating_point, n_boot, boot_seed) -> dict:
-    """Rebuild the identical in-run validation split and return the full metric set.
-
-    Mirrors client_app.evaluate: same split (`generate_splits`, test_size=0.2,
-    seed=42) and the *same* `compute_binary_metrics` on `bst.predict`, so a saved
-    model's offline `auc_roc` matches its federated final-round `auc_roc/<site>`
-    to full precision given matching operating-point / n-boot / boot-seed.
-    """
-    data_df = pd.read_parquet(data_path)
-    _, valid_df, _, _ = generate_splits(
-        data_df, outcome=TARGET_COL, test_size=0.2, seed=42
-    )
-    valid_dmatrix = xgb.DMatrix(valid_df[FEATURE_COLS], label=valid_df[TARGET_COL])
-
-    y_prob = bst.predict(valid_dmatrix)
-    y_true = valid_dmatrix.get_label()
-    return compute_binary_metrics(
-        y_true, y_prob, operating_point, n_boot=n_boot, boot_seed=boot_seed
-    )
+from fed_stroke.baseline import score_booster_on_half  # noqa: E402
 
 
 def main() -> None:
@@ -90,7 +66,7 @@ def main() -> None:
     print(header)
     print("-" * len(header))
     for data_path in args.data:
-        m = _site_metrics(
+        m = score_booster_on_half(
             bst, data_path, args.operating_point, args.n_boot, args.boot_seed
         )
         ci = f"[{m['auc_roc_lo']:.4f},{m['auc_roc_hi']:.4f}]"

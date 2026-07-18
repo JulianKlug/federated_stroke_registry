@@ -1,8 +1,12 @@
 """Unit tests for server-side round derivation and strategy selection (§4.2)."""
+import json
+
+import numpy as np
 import pytest
+import xgboost as xgb
 from flwr.serverapp.strategy import FedXgbBagging
 
-from fed_stroke.server_app import build_strategy, derive_num_rounds
+from fed_stroke.server_app import build_strategy, derive_num_rounds, save_final_model
 from fed_stroke.strategies import OrderedFedXgbCyclic
 
 
@@ -55,3 +59,27 @@ def test_build_strategy_cyclic_uses_configured_order():
 def test_build_strategy_unknown_method():
     with pytest.raises(ValueError):
         build_strategy(_run_config({"train-method": "stacking"}))
+
+
+# --------------------------------------------------------------------------- #
+# save_final_model stamps fed_run_config (§4.3 / A1) — verified at the producer
+# side so a broken stamp can't slip through to the 1.d check as a silent fallback.
+# --------------------------------------------------------------------------- #
+def _tiny_booster():
+    rng = np.random.RandomState(0)
+    x = rng.uniform(0, 1, (40, 2))
+    y = (x[:, 0] + rng.normal(0, 0.1, 40) > 0.5).astype(int)
+    dm = xgb.DMatrix(x, label=y)
+    return xgb.train({"objective": "binary:logistic", "max_depth": 2, "seed": 0},
+                     dm, num_boost_round=3)
+
+
+def test_save_final_model_stamps_fed_run_config(tmp_path):
+    params = {"objective": "binary:logistic", "eta": 0.1, "max_depth": 4, "seed": 0}
+    out_path = save_final_model(_tiny_booster(), tmp_path / "models", params, 40)
+
+    reloaded = xgb.Booster()
+    reloaded.load_model(str(out_path))
+    embedded = json.loads(reloaded.attr("fed_run_config"))
+    assert embedded["params"] == params
+    assert embedded["total_trees"] == 40

@@ -42,6 +42,44 @@ def _local_boost(bst_input, num_local_round, train_dmatrix, train_method):
     return bst_input
 
 
+def round_seed(params, global_round):
+    """params with a per-round XGBoost `seed` (base seed + global round).
+
+    WHY (see out/1d_solution.md): every round rebuilds a fresh
+    `xgb.Booster(params=params)` and `load_model`s the global model, because the
+    ensemble crosses the network. Each reload RE-SEEDS XGBoost's row/column
+    subsampling RNG from `params["seed"]`. A fixed seed therefore makes every
+    round draw the SAME subsample — with `colsample_bytree < 1` over few features
+    that collapses to one column, so all trees split on a single feature and the
+    ensemble underfits (the ~0.10 AUC gap 1.d caught). Advancing the seed per
+    round restores the cross-round sampling diversity an in-process
+    `xgb.train(num_boost_round=N)` gets for free from its advancing RNG, while
+    staying a pure function of the round so cyclic forward/reverse stays
+    reproducible. Never mutates the caller's dict.
+    """
+    return {**params, "seed": int(params.get("seed", 0)) + global_round}
+
+
+def _train_round(
+    params, global_round, num_local_round, train_dmatrix, train_method, global_model
+):
+    """Run one client training round; return the booster to reply with.
+
+    `global_model`: raw bytes of the current global model, or None on round 1
+    (no global model exists yet, so train from scratch). Bagging replies with
+    only the newly boosted trees, cyclic with the full grown ensemble — see
+    `_local_boost`. Pure (no Message/Context), so the regression test can drive
+    the exact per-round sequence `train()` runs.
+    """
+    params = round_seed(params, global_round)
+    if global_model is None:
+        # First round: no global model yet — train the local seed trees.
+        return xgb.train(params, train_dmatrix, num_boost_round=num_local_round)
+    bst = xgb.Booster(params=params)
+    bst.load_model(global_model)
+    return _local_boost(bst, num_local_round, train_dmatrix, train_method)
+
+
 @app.query()
 def site_info(msg: Message, context: Context) -> Message:
     """Answer OrderedFedXgbCyclic's one-time site query with this node's site name."""
@@ -64,22 +102,13 @@ def train(msg: Message, context: Context) -> Message:
     params = cfg["params"]
 
     global_round = msg.content["config"]["server-round"]
-    if global_round == 1:
-        # First round local training
-        bst = xgb.train(
-            params,
-            train_dmatrix,
-            num_boost_round=num_local_round,
-        )
-    else:
-        bst = xgb.Booster(params=params)
+    # Round 1 has no global model yet; later rounds continue the received one.
+    global_model = None
+    if global_round != 1:
         global_model = bytearray(msg.content["arrays"]["0"].numpy().tobytes())
-
-        # Load global model into booster
-        bst.load_model(global_model)
-
-        # Local training
-        bst = _local_boost(bst, num_local_round, train_dmatrix, train_method)
+    bst = _train_round(
+        params, global_round, num_local_round, train_dmatrix, train_method, global_model
+    )
 
     # Save model
     local_model = bst.save_raw("json")

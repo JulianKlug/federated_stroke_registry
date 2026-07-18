@@ -118,6 +118,27 @@ def log_final_round_table(nested: dict) -> None:
             )
 
 
+def save_final_model(bst, model_dir, params, total_trees):
+    """Stamp the resolved run config into the model, then save it to disk.
+
+    Embedding `fed_run_config` (the exact params + tree budget this model was
+    trained under, including any `--run-config` override) turns 1.d's "matched
+    budget" from an assumption into a checked invariant: `check_fed_vs_pooled.py`
+    reads params + budget back from the model itself, not a re-read of
+    `pyproject.toml`. The attribute rides inside the model JSON and survives
+    `save_model`/`load_model` and any `mv` rename.
+    """
+    bst.set_attr(fed_run_config=json.dumps({
+        "params": params,
+        "total_trees": total_trees,
+    }))
+    model_dir.mkdir(parents=True, exist_ok=True)
+    out_path = model_dir / "final_model.json"
+    print(f"\nSaving final model to {out_path}...")
+    bst.save_model(str(out_path))
+    return out_path
+
+
 @app.main()
 def main(grid: Grid, context: Context) -> None:
     # Read run config
@@ -189,17 +210,17 @@ def main(grid: Grid, context: Context) -> None:
         log(WARNING, "Could not write per-run metrics report: %s", exc)
 
     if context.run_config["save-model"]:
-        # Save final model to disk
+        # Rebuild the final global booster from the aggregated arrays.
         bst = xgb.Booster(params=params)
         global_model = bytearray(result.arrays["0"].numpy().tobytes())
-
-        # Load global model into booster
         bst.load_model(global_model)
 
-        # Save model under `model-dir` (an absolute path is CWD-independent;
-        # a relative one resolves against the ServerApp working directory).
-        model_dir = Path(context.run_config["model-dir"])
-        model_dir.mkdir(parents=True, exist_ok=True)
-        out_path = model_dir / "final_model.json"
-        print(f"\nSaving final model to {out_path}...")
-        bst.save_model(str(out_path))
+        # Stamp the resolved run config into the model and save it. `model-dir`
+        # as an absolute path is CWD-independent; a relative one resolves against
+        # the ServerApp working directory.
+        save_final_model(
+            bst,
+            Path(context.run_config["model-dir"]),
+            params,
+            context.run_config["total-trees"],
+        )

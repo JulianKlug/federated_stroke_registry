@@ -1,5 +1,14 @@
 # TODOS
 
+## ✅ DONE (1.d, 2026-07-18) — unified the per-site scorer
+
+1.d extracted the per-site validation split + scoring seam into
+`fed_stroke.baseline.score_booster_on_half`. `scripts/eval_final_model.py`'s
+private `_site_metrics` was replaced by a call to it, so the offline eval table
+and the new federated-vs-pooled gate (`scripts/check_fed_vs_pooled.py`) now score
+through one implementation and cannot drift. (Distinct from the 1.c reuse item
+below, which was already DONE.)
+
 ## ✅ DONE (1.c, 2026-07-17) — 1.c should reuse 1.b's split + site-mapping helpers (do not re-derive)
 
 Resolved by the 1.c evaluation harness: `fed_stroke/metrics.py` and both the

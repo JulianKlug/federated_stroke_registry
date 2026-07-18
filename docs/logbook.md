@@ -18,3 +18,36 @@
   Youden-J cells stay informative (R1 A: tp=24, fp=108). Offline `eval_final_model.py` on the saved
   R1 model matches the federated `auc_roc/<site>` to full precision (shared `compute_binary_metrics`).
   All three artifacts are strict-valid JSON (jq), 0 nulls this run. 37/37 tests pass.
+
+- 2026-07-18 — 1.d federated-vs-pooled correctness check implemented and run. New pooled
+  reference (`baseline.train_pooled_booster`, deterministic: pinned `seed=0` + `nthread=1`),
+  per-site shared scorer, serialization round-trip tripwire, and matched-budget provenance read
+  from each model's embedded `fed_run_config` (server_app now stamps it). All three models were
+  regenerated so provenance = `model`. 71/71 tests pass. **Finding: the check FAILS — federated
+  is far below pooled.** Pooled per-site AUC-ROC: A 0.783, B 0.777 (pooled-combined 0.780).
+  Federated: bagging A 0.692 / B 0.660; cyclic-fwd A 0.701 / B 0.663; cyclic-rev A 0.696 / B 0.670.
+  Per-site |Δ| ≈ 0.08–0.12 for **every** strategy — an order of magnitude above the ±0.03
+  provisional bound. Calibration (`--calibrate 5`, pooled-side only): pooled AUC very stable
+  (spread ≤0.008), so the gap is systematic, not seed noise. Diagnostic: a CENTRALIZED model on
+  only ONE half (40 trees, same params) scores 0.75 (half-A model) / 0.77 (half-B model) on the
+  held-out splits — i.e. a single site's data trained centrally beats ALL federated runs, which
+  use BOTH sites. So the gap is NOT a data-volume effect; the federated training path (1.b) is
+  losing information (likely boosting-continuation / global-model-accumulation defect, affecting
+  bagging AND cyclic alike). 1.d did its job as a tripwire. Root-causing the 1.b federated pipeline
+  is a separate follow-up (out of 1.d scope); the ±3-AUC bound must NOT be relaxed to 0.13 to mask
+  it. Artifact: `out/metrics/fed_vs_pooled.{json,md}` (gate `passed: false`, `roundtrip_ok: true`).
+
+- 2026-07-18 — 1.d gap ROOT-CAUSED and FIXED. Not a boosting-continuation defect (the report's
+  guess): `xgb.train(40)` and an in-process 40x `.update()` loop are identical, so continuation is
+  fine. Real cause: `client_app` rebuilds a fresh `Booster` + `load_model` every round (the ensemble
+  crosses the network), which RE-SEEDS XGBoost's column-subsample RNG from `params.seed=0` each round.
+  With `colsample_bytree=0.8` over 2 features that deterministically draws the SAME single column
+  every round, so all 40 trees split on `Age` and NIH on admission is never used (0 splits vs pooled's
+  170). Confirmed by standalone repro that matched the saved cyclic model to the digit, a param sweep
+  (colsample=1.0 → lossless; colsample=0.8 → collapse), and dumping split features. Fix: advance the
+  seed per round in `client_app` (`round_seed(params, r)` = base + round; `train()` refactored over a
+  new testable `_train_round`). Regenerated all three models on the live 2-SuperNode federation — split
+  usage now balanced (bagging 110/166, cyclic-fwd 106/178, cyclic-rev 114/173 Age/NIH). Gate re-run
+  **PASS** at the unchanged ±0.03: bagging ΔA 0.003 / ΔB 0.017; cyclic-fwd ΔA 0.006 / ΔB 0.007;
+  cyclic-rev ΔA 0.000 / ΔB 0.016. 75/75 tests pass (4 new per-round-seed regressions). Write-up:
+  `out/1d_solution.md`. Artifact: `out/metrics/fed_vs_pooled.{json,md}` (`passed: true`).
