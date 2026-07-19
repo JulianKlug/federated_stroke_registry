@@ -66,6 +66,22 @@ params.subsample = 0.8
 params.colsample-bytree = 0.8
 params.tree-method = "hist"
 
+# Secure-topology values, roadmap 1.e (docs/specs/1e_secure_topology.md §4.5/§4.6).
+# Deliberately NOT [tool.flwr.federations.*]: `flwr run` migrates that legacy block
+# into ~/.flwr/config.toml and then comments it out of this tracked file (spec §3.9).
+# run_local_federation.sh materializes [superlink.local-deployment] in
+# ~/.flwr/config.toml from this table on every `start`; it and the node map below
+# are the single committed source for all ports/addresses/paths.
+[tool.fed_stroke.superlink]
+name = "local-deployment"
+address = "127.0.0.1:9093"        # Control API (what `flwr run`/`flwr supernode register` dial)
+fleet-address = "127.0.0.1:9092"  # Fleet API (what SuperNodes pass to --superlink)
+ca-cert = "architecture/.secrets/ca.crt"  # repo-relative; resolved to absolute at generation time
+
+[tool.fed_stroke.nodes]
+node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", key = "node_A" }
+node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B" }
+
 [dependency-groups]
 dev = ["pytest>=8"]
 

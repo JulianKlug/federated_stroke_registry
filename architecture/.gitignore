@@ -12,5 +12,9 @@
 .venv/
 out/
 .federation/
+# 1.e secret material (CA + server TLS keypair + SuperNode signing keys,
+# scripts/gen_certs.sh). Must stay here: this file is also the FAB packager's
+# exclusion list, so this line keeps the keys out of the bundle too.
+.secrets/
 __pycache__/
 *.py[cod]

@@ -51,3 +51,31 @@
   **PASS** at the unchanged ±0.03: bagging ΔA 0.003 / ΔB 0.017; cyclic-fwd ΔA 0.006 / ΔB 0.007;
   cyclic-rev ΔA 0.000 / ΔB 0.016. 75/75 tests pass (4 new per-round-seed regressions). Write-up:
   `out/1d_solution.md`. Artifact: `out/metrics/fed_vs_pooled.{json,md}` (`passed: true`).
+
+- 2026-07-19 — 1.e secure topology implemented and verified (docs/specs/1e_secure_topology.md). The
+  insecure loopback run is replaced by server-side TLS + CA pinning + EC P-384 node authentication —
+  flwr 1.31's supported realization of the roadmap's "mTLS" (spec §3.6; no X.509 client certs).
+  New `scripts/gen_certs.sh` (local CA, 90-day loopback-SAN server cert, per-node OpenSSH keys, all
+  in gitignored `.secrets/` — also excluded from the FAB via architecture/.gitignore);
+  `run_local_federation.sh` refactored: all ports/paths now come from the committed
+  `[tool.fed_stroke.superlink]`/`[tool.fed_stroke.nodes]` tables in pyproject.toml (NOT
+  `[tool.flwr.federations]`, which `flwr run` would migrate + comment out, spec §3.9), the
+  `[superlink.local-deployment]` entry in ~/.flwr/config.toml is generated on every `start` via
+  flwr's own merge-upsert (other connections preserved, `insecure` dropped), readiness is polled
+  (no more sleep 3), and both node keys are registered on every `start`. Verified end to end:
+  bagging AND cyclic rounds complete over the TLS channel; halves roughly equal (A 1845/B 1829 rows,
+  1691 unique patients each, label balance 0.0889/0.0875; disjointness asserted by
+  prepare_geneva_halves.py). Negative checks are an asserting harness
+  (`scripts/verify_negative_security.sh`, `run_local_federation.sh verify`), all fail closed with
+  live-pinned signatures: unregistered key → SuperLink "[Fleet.ActivateNode] Activation failed: No
+  SuperNode found with the given public key."; wrong CA → SuperNode "SSL/TLS handshake error
+  detected."; insecure `flwr run` → exit 1 "Connection to the SuperLink is unavailable"; plus
+  pyproject.toml stays byte-identical after `flwr run`. §8 residuals resolved empirically: the
+  SQLite `--database` DOES persist registrations, but they cannot be re-bound to static keys on
+  restart (killed nodes stay 'online' until heartbeat expiry ~1 min → activate fails; and
+  node.public_key is UNIQUE with rows kept after unregister → a key can never be re-registered in
+  the same DB). So `start` recreates the LinkState and registers fresh — quick stop/start restart
+  proven robust — and key rotation always mints a NEW key (procedure in gen_certs.sh header).
+  86/86 tests pass (11 new in tests/test_secure_topology.py: cert/key/SAN/validity invariants,
+  flwr-parseability of the OpenSSH keys, no-federations-block tripwire, config-generation
+  merge-not-truncate via FLWR_HOME, gitignore hygiene).

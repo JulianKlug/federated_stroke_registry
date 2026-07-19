@@ -69,7 +69,7 @@ implemented and kept in parallel — no winner is picked here.
   Federated result must be within 3 AUC points of pooled Geneva xgboost.
   Purpose: catch silent data-partitioning, DMatrix, or tree-serialization
   bugs before any downstream DP result is measured against them.
-- [ ] 1.e Secure the topology (architecture §6.1). Replace the insecure
+- [x] 1.e Secure the topology (architecture §6.1). Replace the insecure
   local run with 1 `SuperLink` / 2 `SuperNode`s over **mTLS**, with
   **certificate pinning** and **short-lived credentials** (node
   authentication). Move each SuperNode's `data-path` into `pyproject.toml`
@@ -79,6 +79,17 @@ implemented and kept in parallel — no winner is picked here.
   de-risk onboarding; nothing here is throwaway. Verify: disjoint patient
   sets across the two halves, roughly equal size, similar label balance,
   and a federated round completes end to end over the mTLS channel.
+  *(Note on the literal wording, superseded by
+  docs/specs/1e_secure_topology.md Decision 1-3: "mTLS" is realized as
+  Flower-native server-side TLS + CA pinning + EC node authentication —
+  flwr 1.31 has no X.509 client-cert mTLS. And `data-path` in
+  `[tool.flwr.federations.<name>]` is infeasible twice over: `data-path`
+  is per-SuperNode `node_config` while a federation block is a single
+  connection entry, and `flwr run` migrates any committed
+  `[tool.flwr.federations]` into `~/.flwr/config.toml` and comments it
+  out of the tracked pyproject.toml. The committed config lives in
+  `[tool.fed_stroke.superlink]`/`[tool.fed_stroke.nodes]` instead, spec
+  §4.5-§4.6.)*
 - [ ] 1.f Docker smoke build. Dockerfile compiles, container runs the
   pipeline end-to-end on the dev machine. Full Shenzhen-ready packaging
   (version pinning, clean-bootstrap test on a non-dev machine) is

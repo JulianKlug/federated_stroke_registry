@@ -3,6 +3,7 @@
 CLAUDE.md
 out/
 .federation/
+architecture/.secrets/
 .DS_Store
 
 # Byte-compiled / optimized / DLL files
