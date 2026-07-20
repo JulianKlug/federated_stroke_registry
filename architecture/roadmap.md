@@ -65,7 +65,7 @@ implemented and kept in parallel — no winner is picked here.
   Alternate cyclic order across runs to check for last-site bias.
 - [x] 1.c Evaluation harness: site-stratified AUC-ROC, AUC-PR, Brier, and
   confusion matrix at the operating point, per architecture §4.
-- [ ] 1.d Federated-vs-pooled correctness check on Geneva 50/50 partition.
+- [x] 1.d Federated-vs-pooled correctness check on Geneva 50/50 partition.
   Federated result must be within 3 AUC points of pooled Geneva xgboost.
   Purpose: catch silent data-partitioning, DMatrix, or tree-serialization
   bugs before any downstream DP result is measured against them.
