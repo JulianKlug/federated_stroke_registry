@@ -16,6 +16,11 @@ dependencies = [
     "pandas>=2.0",
     "openpyxl>=3.1",
     "pyarrow>=15",
+    # Explicit (today only transitive via xgboost/pandas/scikit-learn): the DP
+    # plug-point's accountant + learner import them directly and must resolve
+    # under `uv sync --no-dev` in the torch-free Shenzhen container (spec 1.1 §2).
+    "numpy>=1.26",
+    "scipy>=1.11",
 ]
 
 [tool.hatch.build]
@@ -66,6 +71,19 @@ params.subsample = 0.8
 params.colsample-bytree = 0.8
 params.tree-method = "hist"
 
+# DP plug-point knobs (roadmap Phase v1.1/v1.2 prerequisite; docs/specs/1_1_prereq_dp_plugpoint.md
+# §4.3). A SIBLING `dp.*` table, NEVER under `params.*`: XGBoost rejects unknown params, and these
+# never reach `xgb.train` — they are consumed by `DPConfig.from_run_config` in `fed_stroke.dp`.
+# `dp.enabled = true` forces `subsample = 1.0` inside the DP learner (honest q=1.0 accounting, §3.5);
+# the `params.subsample = 0.8` above stays a utility knob for the non-DP arms only.
+dp.enabled = false
+dp.mechanism = "gaussian"        # "gaussian" (RDP, primary) | "laplace" (secondary basic-composition)
+dp.target-epsilon = 5.0          # arch §6.3 starting budget; the {1,3,5,10} sweep is downstream (1.1.b)
+dp.delta = 1e-5
+dp.clip-bound = 1.0              # geometric leaf clip |w| <= clip_bound (post-processing; ZERO ε effect)
+dp.max-bins = 32
+dp.bin-strategy = "fixed-range"  # "fixed-range" (data-independent, DP-safe) | "quantile" (NON-DP arms only)
+
 # Secure-topology values, roadmap 1.e (docs/specs/1e_secure_topology.md §4.5/§4.6).
 # Deliberately NOT [tool.flwr.federations.*]: `flwr run` migrates that legacy block
 # into ~/.flwr/config.toml and then comments it out of this tracked file (spec §3.9).
@@ -83,7 +101,11 @@ node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", ke
 node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B" }
 
 [dependency-groups]
-dev = ["pytest>=8"]
+# opacus (pulls torch, ~heavy) is the DP-accountant equivalence-gate reference ONLY
+# (docs/specs/1_1_prereq_dp_plugpoint.md §2/§8.8). It MUST NOT enter [project].dependencies
+# or the Shenzhen container — dependency-groups are excluded from the built wheel and from
+# `uv sync --no-dev`, keeping the federated client runtime torch-free (acceptance §7.6).
+dev = ["pytest>=8", "opacus>=1.5,<2"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -114,7 +114,7 @@ and gives a first look at the utility landscape on real Geneva data. The
 headline curve on real cross-site data with the winning strategy is produced
 in Phase v1.3.
 
-- [ ] Prerequisite — DP plug-point prototype on single-site synthetic.
+- [x] Prerequisite — DP plug-point prototype on single-site synthetic.
   Custom client-side DP-XGBoost-style Laplace/Gaussian noise on
   gradient/hessian histograms before aggregation, plus geometric clipping
   of leaf outputs to bound sensitivity (architecture §6.3). Flower's
@@ -133,6 +133,19 @@ in Phase v1.3.
   ε ∈ {1, 3, 5, 10}, δ = 1e-5. DP changes the utility landscape —
   `max_depth` and `min_child_weight` in particular trade off differently
   under histogram noise.
+  - **GATE (blocking) — independent DP/privacy review of the accountant
+    before this runs on real patient data.** 1.1.b is the first task that
+    reports ε as a claim about real Geneva patients, not a synthetic sanity
+    number. Before it runs, a reviewer with DP expertise *independent of the
+    accountant's author* must sign off on the accounting: the per-level
+    composition, the `2·D·T` Gaussian release count (both the gradient and
+    hessian histograms are noised — see spec `1_1_prereq` §3.3), the Laplace
+    L1 (`∝ d`, not `√d`) scale, and the Balle RDP→(ε,δ) conversion. The
+    Opacus equivalence gate and the prototype's own tests do NOT satisfy this
+    — the gate is blind to the release count, and author-written tests share
+    the author's blind spots (both errors above were caught only by an
+    independent re-derivation at spec stage). Record the sign-off (reviewer,
+    date, scope) in `docs/logbook.md`.
 - [ ] 1.1.c Search method matched to compute budget: Optuna / TPE if
   evaluation runs are cheap, coarse grid otherwise. Rényi-DP composition
   accounting across rounds throughout.

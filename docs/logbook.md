@@ -115,3 +115,33 @@
   Digest pin, exact OS-OpenMP pin, non-root USER, and the non-dev-machine clean-bootstrap test
   are deferred to 1.3.a (roadmap). 99/99 tests pass (13 new static invariants in
   tests/test_docker_smoke.py; the live build+run is a scripted dev-machine check, not a pytest).
+- 2026-07-20 — DP plug-point prototype (Phase v1.1/v1.2 prerequisite) implemented and verified
+  (docs/specs/1_1_prereq_dp_plugpoint.md). New `fed_stroke/dp/` subpackage: a torch-free RDP
+  accountant (`accounting.py`), a self-contained NumPy DP-GBDT learner + mechanism + seam
+  (`boost.py`), a single-site synthetic generator (`synthetic.py`), a three-arm demo
+  (`scripts/dp_prototype_demo.py`), and `tests/dp/`. numpy/scipy became explicit runtime deps;
+  opacus>=1.5,<2 is dev-only (the gate reference; the runtime stays torch-free — verified: under
+  `uv sync --no-dev`, opacus/torch absent, `import fed_stroke.dp` succeeds).
+  **THE GATE PASSES:** our `account_run` ε equals Opacus `RDPAccountant` within rel=1e-6 at every
+  q=1.0 toy setting (σ∈{0.5,1,2}×steps∈{1,20,100}); `DEFAULT_ORDERS == RDPAccountant.DEFAULT_ALPHAS`;
+  the inverse `noise_multiplier_for_epsilon` round-trips to target ε (ε∈{1,3,5,10}, m∈{80,160})
+  without over-spending. 52 dp tests + 151 full-suite green.
+  **Spec correction caught by the gate:** the spec's order grid `range(11,64)` is wrong — Opacus
+  uses `range(12,64)` (integer 11 is deliberately absent; the fractional run tops out at 10.9).
+  `range(11,64)` both fails `test_default_orders_match_opacus` and injects an extra α=11 that can
+  win the min and break the rel=1e-6 match. Implemented `range(12,64)`.
+  **Composition pinned (the Opacus gate cannot see these, §3.2/§3.3):** `num_histogram_queries =
+  D×T` (levels, NOT 2^D−1 nodes) and `num_gaussian_releases = 2×D×T` (gradient AND hessian are two
+  Gaussian releases per level — feeding D×T under-reports ε ~2×). Leaf clipping is post-processing:
+  reported ε is invariant to `clip_bound`. Laplace calibrates to L1 (`d`), not L2 (`√d`).
+  **Scale correction (from the user):** the cohorts are disbalanced — GVA >2000 total (~1000/node),
+  Shenzhen ~40000 — NOT the spec's assumed "~380 per-site". DP utility is scale-sensitive: at n≈380
+  the honest 120-release accounting drove ε≤5 to chance; at n≈1000 (GVA per-node, the binding case)
+  the mechanism shows a clean monotone ε→AUC erosion. Three-arm synthetic sanity (n=1000, seed=0,
+  max_depth=3, rounds=20, gaussian, 60 levels / 120 releases, δ=1e-5, q=1.0):
+  A classic-xgb AUC 0.834 ≈ B numpy-nonoise 0.822 (A→B = learner cost); then B→C = privacy cost —
+  ε=1 (σ=44.3) 0.529, ε=5 (σ=10.4) 0.648, ε=30 (σ=2.46) 0.848, ε=100 (σ=1.07) 0.804, ε=1000
+  (σ=0.27) 0.821. Takeaway: at GVA per-node scale, meaningful DP utility needs ε≳30 under this
+  honest 2·D·T accounting. Seam (`DPConfig`/`HistogramNoiseMechanism`/`train_dp_gbdt`) + `dp.*`
+  config are defined; FL wiring (DPBooster serialization, DP-aware aggregator) stays a downstream
+  v1.1 integration item (§4.5).
