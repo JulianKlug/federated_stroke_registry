@@ -90,7 +90,7 @@ implemented and kept in parallel — no winner is picked here.
   out of the tracked pyproject.toml. The committed config lives in
   `[tool.fed_stroke.superlink]`/`[tool.fed_stroke.nodes]` instead, spec
   §4.5-§4.6.)*
-- [ ] 1.f Docker smoke build. Dockerfile compiles, container runs the
+- [x] 1.f Docker smoke build. Dockerfile compiles, container runs the
   pipeline end-to-end on the dev machine. Full Shenzhen-ready packaging
   (version pinning, clean-bootstrap test on a non-dev machine) is
   deferred to Phase v1.3, but building the image once here catches

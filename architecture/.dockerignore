@@ -1,0 +1,27 @@
+# Build-context-root ignore file for the 1.f Docker smoke build
+# (docs/specs/1f_docker_smoke_build.md, sec 4.3). Works ONLY because the build
+# context is architecture/ (sec 4.2): Docker reads .dockerignore from the ROOT of
+# the build context, so this is <context>/.dockerignore. A .dockerignore in any
+# other subdirectory would be silently ignored.
+#
+# Load-bearing for the "no secret key material in the image" criterion (sec 7):
+# without it honored, `COPY .` would bake the host .secrets/ (CA + node PRIVATE
+# keys) and .venv/ into the image. Patterns mirror architecture/.gitignore.
+#
+# NOTE: this is a SEPARATE file from architecture/.gitignore, which is copied into
+# the image and left intact - that one governs the in-container `flwr run` FAB
+# build (sec 3.3) and must not be stripped.
+#
+# Docker .dockerignore does NOT support trailing inline comments (and non-ASCII
+# bytes in a pattern crash the BuildKit parser), so keep pattern lines bare.
+#
+# .venv/       - rebuilt by uv sync; never copy the host venv
+# .secrets/    - host CA + node PRIVATE keys; must never enter the image (security)
+# .federation/ - run logs + state.db from host runs
+# out/         - data + artifacts are mounted, never baked in (Decision 2)
+.venv/
+.secrets/
+.federation/
+out/
+__pycache__/
+*.py[cod]

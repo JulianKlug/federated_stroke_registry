@@ -79,3 +79,39 @@
   86/86 tests pass (11 new in tests/test_secure_topology.py: cert/key/SAN/validity invariants,
   flwr-parseability of the OpenSSH keys, no-federations-block tripwire, config-generation
   merge-not-truncate via FLWR_HOME, gitignore hygiene).
+
+- 2026-07-20 — 1.f Docker smoke build implemented and verified on the dev machine
+  (docs/specs/1f_docker_smoke_build.md). New `architecture/Dockerfile` (python:3.12-slim + three
+  apt packages — `openssh-client` for gen_certs.sh's `ssh-keygen` plus `libgomp1`/`openssl` as
+  defense-in-depth, see the finding below — then `uv sync --locked --no-dev` from the committed
+  uv.lock), `architecture/.dockerignore`, `architecture/scripts/smoke_pipeline.sh`
+  (the container CMD and the local smoke command both), and `tests/test_docker_smoke.py`. The
+  container REPRODUCES the host tree (/workspace/architecture + /workspace/out, venv at
+  /workspace/architecture/.venv) so `run_local_federation.sh`/`gen_certs.sh` run VERBATIM,
+  unforked — a single loopback container fits the whole 1.e topology (127.0.0.1) with no docker
+  networking. Build context is `architecture/` (NOT the repo root) so Docker actually reads
+  `architecture/.dockerignore` and never bakes host `.secrets/`/`.venv/`/`.federation/`/`out/`.
+  Real Geneva halves are bind-mounted at run time (`-v <repo>/out:/workspace/out`), never baked in.
+  Verified end to end: image builds (1.63 GB); build-time no-secrets check passes (`.secrets/`,
+  `.federation/` absent in the image); `docker run --init` brings up the secure topology (TLS +
+  node auth, both nodes registered), streams one 20-round bagging run to completion over the TLS
+  channel (`flwr run . local-deployment --stream`), and the smoke gate's OWN assertion passes —
+  both sites present in the last round with finite AUC (final-round auc_roc A 0.779 / B 0.794),
+  then teardown. **Verification finding that corrected the spec's §3.1 premise:** dropping
+  `libgomp1` did NOT break the run — `xgboost==3.3.0`'s manylinux wheel vendors its own
+  `libgomp-*.so.1` under `xgboost.libs/` (confirmed via `ldd libxgboost.so`), so `import xgboost`
+  works without the system OpenMP; and `openssl` already ships in `python:3.12-slim`. The ONE
+  package both required and missing from the slim base is `openssh-client` — dropping it makes the
+  container fail fast at `gen_certs.sh:99` (`ssh-keygen: command not found`, exit 127) before any
+  training. That is the real Dockerfile bug 1.f catches; `libgomp1`/`openssl` are kept as
+  defense-in-depth (insurance against xgboost wheel / base-image changes), documented as such in
+  the Dockerfile. Two further spec/impl bugs caught pre-merge: (1) a `.dockerignore` with trailing
+  inline comments + an em-dash crashed BuildKit's exclude-patterns parser (fixed: bare ASCII
+  pattern lines — Docker `.dockerignore` supports neither inline comments nor non-ASCII bytes in a
+  pattern); (2) the spec's §6.2 no-secrets check tested `.venv/pyvenv.cfg` absence, but `uv sync`
+  rebuilds the venv inside the image so that path always exists — the check could never pass;
+  corrected to assert `.secrets`/`.federation` absence (the host-only dirs nothing recreates).
+  `run_local_federation.sh`/`gen_certs.sh`/architecture/.gitignore reused unchanged.
+  Digest pin, exact OS-OpenMP pin, non-root USER, and the non-dev-machine clean-bootstrap test
+  are deferred to 1.3.a (roadmap). 99/99 tests pass (13 new static invariants in
+  tests/test_docker_smoke.py; the live build+run is a scripted dev-machine check, not a pytest).
