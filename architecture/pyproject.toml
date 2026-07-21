@@ -58,6 +58,15 @@ metrics-dir = "out/metrics"  # where the per-run site-stratified JSON is written
 n-boot = 1000                # bootstrap resamples for per-metric 95% CIs (§4.1); determinism via boot-seed
 boot-seed = 0                # RNG seed for reproducible bootstrap CIs
 
+# HPO split protocol (roadmap 1.1.a; docs/specs/1_1_a_hpo_harness.md §4.5/§4.6).
+# All three default to today's FLAT single-split behavior, so an unconfigured run is
+# byte-identical to the pre-1.1.a seed-42 split. The HPO harness overrides them per
+# run via --run-config. HOLDOUT_PARTITION_SEED is a module constant in task.py (never
+# a config key): it must not vary, or the HELD set would shift between search & report.
+split-seed = 42       # train/valid split seed; HPO varies it for repeated CV on DEV
+holdout-frac = 0.0    # patient-disjoint hold-out fraction; 0.0 = disabled (flat split)
+holdout-eval = false  # true only for the winner's hold-out report run: train on DEV, evaluate on HELD
+
 # XGBoost parameters (architecture §3; matched across both strategies)
 params.objective = "binary:logistic"
 params.seed = 0 # pinned so the 1.d pooled reference trains deterministically (XGBoost default is already 0, so federated numbers are unchanged)

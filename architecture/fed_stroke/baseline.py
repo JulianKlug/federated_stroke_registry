@@ -22,7 +22,7 @@ from flwr.common.config import unflatten_dict
 
 from fed_stroke.metrics import compute_binary_metrics
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
-from fed_stroke.task import generate_splits, replace_keys
+from fed_stroke.task import replace_keys, resolve_run_split
 
 
 def load_matched_config(pyproject_path) -> tuple[dict, int]:
@@ -86,18 +86,23 @@ def assert_matched_across_models(configs) -> tuple[dict, int]:
     return ref_params, ref_trees
 
 
-def split_half(data_path):
-    """(train_df, valid_df) for one half via generate_splits(test_size=0.2, seed=42).
+def split_half(data_path, split_seed=42, holdout_frac=0.0, holdout_eval=False):
+    """(train_df, valid_df) for one half via `task.resolve_run_split`.
 
     The exact split contract `load_data_gva` uses, so `valid_df` here IS the split
     `client_app.evaluate` scored on. The returned frames carry the full column set
     (incl. `patient_id`/`case_admission_id`/target) — callers subset as needed.
+
+    Defaults (`split_seed=42, holdout_frac=0.0, holdout_eval=False`) reproduce the
+    old hardcoded `generate_splits(..., test_size=0.2, seed=42)` split byte-for-byte,
+    so `train_pooled_booster` and 1.d stay unchanged. The HPO harness passes
+    non-default values to reconstruct the search / hold-out splits (spec 1.1.a §4.5).
     """
     data_df = pd.read_parquet(data_path)
-    train_df, valid_df, _, _ = generate_splits(
-        data_df, outcome=TARGET_COL, test_size=0.2, seed=42
+    return resolve_run_split(
+        data_df, outcome=TARGET_COL, split_seed=split_seed,
+        holdout_frac=holdout_frac, holdout_eval=holdout_eval,
     )
-    return train_df, valid_df
 
 
 def train_pooled_booster(half_paths, params, num_boost_round) -> xgb.Booster:
@@ -153,16 +158,25 @@ def train_pooled_booster(half_paths, params, num_boost_round) -> xgb.Booster:
     return xgb.train(fit_params, dtrain, num_boost_round=num_boost_round)
 
 
-def score_booster_on_half(bst, data_path, operating_point, n_boot, boot_seed) -> dict:
+def score_booster_on_half(bst, data_path, operating_point, n_boot, boot_seed,
+                          split_seed=42, holdout_frac=0.0, holdout_eval=False) -> dict:
     """Rebuild the half's valid split and return compute_binary_metrics(...).
 
     The single shared scorer: the federated model, the pooled model, and 1.c's
     `eval_final_model.py` all score a booster on a half through this one function,
     so their AUCs match by construction. Mirrors `client_app.evaluate`: same split
-    (`generate_splits`, test_size=0.2, seed=42), same DMatrix columns, same
-    `compute_binary_metrics` call.
+    (via `resolve_run_split`), same DMatrix columns, same `compute_binary_metrics`
+    call.
+
+    The `split_seed`/`holdout_frac`/`holdout_eval` params reconstruct the exact split
+    a given run used (spec 1.1.a §4.5): at the defaults this is today's flat seed-42
+    valid split; the HPO harness scores a search model on its search-seed valid split
+    and the winner on the patient-disjoint HELD set (`holdout_eval=True`).
     """
-    _, valid_df = split_half(data_path)
+    _, valid_df = split_half(
+        data_path, split_seed=split_seed, holdout_frac=holdout_frac,
+        holdout_eval=holdout_eval,
+    )
     valid_dmatrix = xgb.DMatrix(valid_df[FEATURE_COLS], label=valid_df[TARGET_COL])
     y_prob = bst.predict(valid_dmatrix)
     y_true = valid_dmatrix.get_label()

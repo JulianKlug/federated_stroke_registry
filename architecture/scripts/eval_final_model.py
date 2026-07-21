@@ -45,6 +45,15 @@ def main() -> None:
                         help="Bootstrap resamples for the 95%% CIs (config default 1000)")
     parser.add_argument("--boot-seed", type=int, default=0,
                         help="RNG seed for reproducible bootstrap CIs (config default 0)")
+    # Split-reconstruction flags (spec 1.1.a §4.5/§5): reproduce the exact split a
+    # run used. Defaults reproduce today's flat seed-42 valid split; the HPO
+    # hold-out report is reconstructed with --holdout-frac 0.2 --holdout-eval.
+    parser.add_argument("--split-seed", type=int, default=42,
+                        help="train/valid split seed (config default 42)")
+    parser.add_argument("--holdout-frac", type=float, default=0.0,
+                        help="patient-disjoint hold-out fraction; 0.0 = flat split (default)")
+    parser.add_argument("--holdout-eval", action="store_true",
+                        help="score on the HELD set (train on DEV) — the hold-out report split")
     args = parser.parse_args()
 
     bst = xgb.Booster()
@@ -67,7 +76,9 @@ def main() -> None:
     print("-" * len(header))
     for data_path in args.data:
         m = score_booster_on_half(
-            bst, data_path, args.operating_point, args.n_boot, args.boot_seed
+            bst, data_path, args.operating_point, args.n_boot, args.boot_seed,
+            split_seed=args.split_seed, holdout_frac=args.holdout_frac,
+            holdout_eval=args.holdout_eval,
         )
         ci = f"[{m['auc_roc_lo']:.4f},{m['auc_roc_hi']:.4f}]"
         fixed = f"({m['tn']},{m['fp']},{m['fn']},{m['tp']})"

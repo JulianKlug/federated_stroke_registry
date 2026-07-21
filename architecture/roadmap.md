@@ -128,7 +128,12 @@ in Phase v1.3.
 - [ ] 1.1.a Systematic HPO on bagging: `num_server_rounds`, `max_depth`,
   `eta`, `min_child_weight`, `subsample`, `colsample_bytree` (architecture
   §3 defaults are starting points, not endpoints). Cyclic revalidation
-  happens in Phase v1.3 once the strategy winner is picked.
+  happens in Phase v1.3 once the strategy winner is picked. The harness
+  built here is strategy-agnostic (runs bagging and cyclic) and
+  substrate-agnostic (federation-parameterized), so the same code drives the
+  Geneva-dev loopback topology now and the cross-site re-run later; see
+  docs/specs/1_1_a_hpo_harness.md. The Geneva-only ranges are **provisional**
+  — re-tuned on real cross-site data in Phase v1.3 (1.3.b′).
 - [ ] 1.1.b Run the sweep both without DP and with DP at each pilot
   ε ∈ {1, 3, 5, 10}, δ = 1e-5. DP changes the utility landscape —
   `max_depth` and `min_child_weight` in particular trade off differently
@@ -174,9 +179,18 @@ divergence gates cleared); local sanity baseline v0.b (Shenzhen) published.
 - [ ] 1.3.b Cross-site smoke test. mTLS handshake works between Geneva and
   Shenzhen SuperNodes. One federated round completes end to end. No
   science yet — just wires.
+- [ ] 1.3.b′ Cross-site HPO re-run. The Geneva-only hyperparameter ranges
+  from 1.1.a are provisional — Shenzhen's ~40k cohort and different
+  distribution move the optimum. Using the **same** 1.1.a harness with
+  `--federation` pointed at the real GVA↔Shenzhen deployment, re-tune on real
+  cross-site data. Bounded to the narrowed ranges 1.1.a produced (not a wide
+  search): the re-run drives real federated rounds over the international link
+  with the partner's node in the loop, so the round budget must stay small.
+  Produces the cross-site re-tuned hyperparameters 1.3.c consumes.
 - [ ] 1.3.c Real cross-site bake-off: run both `FedXgbBagging` and
-  `FedXgbCyclic` on real data from both sites at the tuned hyperparameters
-  from v1.1/v1.2. Alternate cyclic order across runs.
+  `FedXgbCyclic` on real data from both sites at the **cross-site re-tuned**
+  hyperparameters (1.3.b′) — not the provisional Geneva-only ranges from
+  v1.1/v1.2. Alternate cyclic order across runs.
 - [ ] 1.3.d Pick winner by site-stratified AUC (not pooled). Report both.
   Tie-break rule: if bagging wins one site and cyclic wins the other,
   prefer the strategy with lower cross-site AUC variance. If variance is

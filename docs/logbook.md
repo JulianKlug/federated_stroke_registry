@@ -145,3 +145,16 @@
   honest 2·D·T accounting. Seam (`DPConfig`/`HistogramNoiseMechanism`/`train_dp_gbdt`) + `dp.*`
   config are defined; FL wiring (DPBooster serialization, DP-aware aggregator) stays a downstream
   v1.1 integration item (§4.5).
+
+- 2026-07-21 — 1.1.a HPO harness implemented (docs/specs/1_1_a_hpo_harness.md): pure core
+  `fed_stroke/hpo.py` + driver `scripts/run_hpo.py` (`flwr run --stream`, offline both-halves
+  scoring, winner hold-out re-run, 4 artifacts). Objective = mean two-half AUC-ROC, tie-break lower
+  cross-site variance, scored on the SAVED model (bagging/cyclic comparable). Split unified into
+  `task.resolve_run_split` (3 new config keys default to today's flat seed-42 split); final report
+  is a **patient-disjoint** hold-out (fixed `HOLDOUT_PARTITION_SEED=42`, not a leaky held-out seed).
+  **Validated on EXAMPLE halves only (throwaway):** V1 pytest 184/184 (+33, incl. seed-42
+  byte-identity + HELD-disjointness guards); V2 dry-run 972 runs / 0 rejected; V3/V5 bagging+cyclic
+  E2E on the live federation (reduced {4,8}-tree grid — full-grid run ~4 min via deployment polling)
+  → 4 artifacts, ⚠ noise-tier banners; V4 `eval_final_model.py --holdout-eval` reproduced the HELD
+  AUC-ROC to fp identity (0.8005 / 0.7705). Deliverable ranges await the same commands on real
+  frozen-schema data (`--data-provenance real-frozen-schema`) — the hand-off to 1.1.b / v1.3 (1.3.b′).
