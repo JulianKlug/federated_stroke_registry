@@ -11,6 +11,7 @@ Usage:
         --expected-trees 40
 """
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ import xgboost as xgb
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fed_stroke.baseline import score_booster_on_half  # noqa: E402
+from fed_stroke.dp import DP_MODEL_FORMAT, DPBooster  # noqa: E402
 
 
 def main() -> None:
@@ -56,11 +58,25 @@ def main() -> None:
                         help="score on the HELD set (train on DEV) — the hold-out report split")
     args = parser.parse_args()
 
-    bst = xgb.Booster()
-    bst.load_model(str(args.model))
-    bst.set_param({"eval_metric": "auc"})
+    # File-format sniff at the loader — the one place the model file is opened (§4.8, Decision 10).
+    # A DP model carries "format": "dp-gbdt-v1"; an XGB model does not. Without this branch the
+    # hard-coded xgb.Booster().load_model throws on a DP JSON.
+    data = args.model.read_bytes()
+    try:
+        is_dp = json.loads(data.decode("utf-8")).get("format") == DP_MODEL_FORMAT
+    except (ValueError, UnicodeDecodeError):
+        is_dp = False   # XGBoost's JSON is not our flat dp-gbdt-v1 payload
 
-    n_trees = bst.num_boosted_rounds()
+    if is_dp:
+        bst = DPBooster.from_json_bytes(data)
+        n_trees = len(bst.trees)
+        # (eval_metric is irrelevant to DPBooster.predict; DPBooster has no set_param.)
+    else:
+        bst = xgb.Booster()
+        bst.load_model(str(args.model))
+        bst.set_param({"eval_metric": "auc"})
+        n_trees = bst.num_boosted_rounds()
+
     assert n_trees == args.expected_trees, (
         f"tree-budget mismatch: {args.model.name} has {n_trees} trees, "
         f"expected {args.expected_trees}"

@@ -12,13 +12,14 @@ from flwr.common.config import unflatten_dict
 from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedXgbBagging
 
+from fed_stroke.dp import DPBooster, DPConfig
 from fed_stroke.metrics import (
     nest_site_metrics,
     render_run_report,
     site_stratified_evaluate_metrics,
     validate_metrics_artifact,
 )
-from fed_stroke.strategies import OrderedFedXgbCyclic
+from fed_stroke.strategies import DPFedXgbBagging, OrderedFedXgbCyclic
 from fed_stroke.task import replace_keys
 
 # Create ServerApp
@@ -56,14 +57,20 @@ def build_strategy(run_config):
     fraction other than 0.0/1.0 (1.0 is the only useful one).
     """
     train_method = run_config["train-method"]
+    dp = DPConfig.from_run_config(replace_keys(unflatten_dict(run_config)))
     if train_method == "bagging":
-        return FedXgbBagging(
+        # DP bagging concatenates DPBooster trees (§4.6); non-DP keeps flwr's stock strategy so
+        # dp.enabled=false is byte-identical.
+        bagging_cls = DPFedXgbBagging if dp.enabled else FedXgbBagging
+        return bagging_cls(
             fraction_train=run_config["fraction-train"],
             fraction_evaluate=run_config["fraction-evaluate"],
             min_available_nodes=run_config["num-sites"],
             evaluate_metrics_aggr_fn=site_stratified_evaluate_metrics,
         )
     if train_method == "cyclic":
+        # Cyclic reuses OrderedFedXgbCyclic unchanged regardless of dp.enabled: FedXgbCyclic adopts
+        # reply[0] bytes wholesale (format-agnostic) and the DP client returns the full ensemble.
         return OrderedFedXgbCyclic(
             order=run_config["cyclic-order"],
             fraction_train=run_config["fraction-train"],
@@ -127,14 +134,23 @@ def save_final_model(bst, model_dir, params, total_trees):
     reads params + budget back from the model itself, not a re-read of
     `pyproject.toml`. The attribute rides inside the model JSON and survives
     `save_model`/`load_model` and any `mv` rename.
+
+    Dispatch on the object type (Decision 9), NOT a new argument, so the signature and the non-DP
+    save path stay byte-identical. A DPBooster has no set_attr/save_model (those are XGB-only), so
+    its provenance rides in the `meta` block: fold `fed_run_config` in, then write to_json_bytes().
     """
+    model_dir.mkdir(parents=True, exist_ok=True)
+    out_path = model_dir / "final_model.json"
+    print(f"\nSaving final model to {out_path}...")
+    if isinstance(bst, DPBooster):
+        bst.meta = dict(bst.meta or {})
+        bst.meta["fed_run_config"] = {"params": params, "total_trees": total_trees}
+        out_path.write_bytes(bst.to_json_bytes())
+        return out_path
     bst.set_attr(fed_run_config=json.dumps({
         "params": params,
         "total_trees": total_trees,
     }))
-    model_dir.mkdir(parents=True, exist_ok=True)
-    out_path = model_dir / "final_model.json"
-    print(f"\nSaving final model to {out_path}...")
     bst.save_model(str(out_path))
     return out_path
 
@@ -159,6 +175,7 @@ def main(grid: Grid, context: Context) -> None:
     # Flatted config dict and replace "-" with "_"
     cfg = replace_keys(unflatten_dict(context.run_config))
     params = cfg["params"]
+    dp = DPConfig.from_run_config(cfg)
 
     # Init global model
     # Init with an empty object; the XGBooster will be created
@@ -209,11 +226,29 @@ def main(grid: Grid, context: Context) -> None:
     except Exception as exc:  # noqa: BLE001 - report is best-effort
         log(WARNING, "Could not write per-run metrics report: %s", exc)
 
+    if dp.enabled:
+        # DP: rebuild the merged DPBooster (restores .meta, §4.1) and log the accounting the run
+        # operated at. SYNTHETIC/EXAMPLE data only — this is NOT a real-ε claim (Decision 6, §8);
+        # the real-Geneva ε sweep is 1.1.b behind the independent DP-accountant review.
+        dp_bst = DPBooster.from_json_bytes(bytes(result.arrays["0"].numpy().tobytes()))
+        m = dp_bst.meta or {}
+        log(
+            INFO,
+            "DP run (synthetic/example data — NOT a real-ε claim): mechanism=%s "
+            "reported_epsilon=%s noise_multiplier=%s num_releases=%s (=2·D·per_site) "
+            "per_site_trees=%s delta=%s",
+            dp.mechanism, m.get("reported_epsilon"), m.get("noise_multiplier"),
+            m.get("num_releases"), m.get("per_site_trees"), dp.delta,
+        )
+
     if context.run_config["save-model"]:
         # Rebuild the final global booster from the aggregated arrays.
-        bst = xgb.Booster(params=params)
-        global_model = bytearray(result.arrays["0"].numpy().tobytes())
-        bst.load_model(global_model)
+        if dp.enabled:
+            bst = DPBooster.from_json_bytes(bytes(result.arrays["0"].numpy().tobytes()))
+        else:
+            bst = xgb.Booster(params=params)
+            global_model = bytearray(result.arrays["0"].numpy().tobytes())
+            bst.load_model(global_model)
 
         # Stamp the resolved run config into the model and save it. `model-dir`
         # as an absolute path is CWD-independent; a relative one resolves against

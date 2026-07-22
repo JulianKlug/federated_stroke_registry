@@ -134,8 +134,29 @@ in Phase v1.3.
   Geneva-dev loopback topology now and the cross-site re-run later; see
   docs/specs/1_1_a_hpo_harness.md. The Geneva-only ranges are **provisional**
   — re-tuned on real cross-site data in Phase v1.3 (1.3.b′).
+  **Status (2026-07-21): harness built + validated end-to-end (bagging + cyclic)
+  on the example halves (184/184 tests; `fed_stroke/hpo.py`, `scripts/run_hpo.py`).
+  The provisional Geneva ranges — the item's second deliverable — remain blocked on
+  real frozen-schema Geneva data (phase blocker), so this stays open until the sweep
+  is re-run on real data with `--data-provenance real-frozen-schema` and recorded in
+  the logbook.**
+- [x] 1.1.a′ DP → FL integration. Wire the single-site DP seam
+  (`fed_stroke/dp/`: `DPConfig`, `HistogramNoiseMechanism`, `train_dp_gbdt`, the
+  RDP accountant) into the real federated path: client-side Laplace/Gaussian noise
+  on the gradient AND hessian histograms + geometric leaf clipping (architecture
+  §6.3), a DP-aware aggregator, and `DPBooster` serialization across rounds, with
+  the accountant composing the `2·D·T` releases per run (spec `1_1_prereq` §3.3).
+  `dp.enabled = true` forces `subsample = 1.0` for honest q = 1.0 accounting. The
+  `dp.*` config keys and the 1.1.a harness already thread these via `--run-config`,
+  so this makes those knobs bite and turns 1.1.b into "the 1.1.a sweep + DP arms"
+  with no new orchestration. Built and validated on the loopback
+  `local-deployment` topology (synthetic/example data) — it does NOT run on real
+  patient data (that is gated in 1.1.b), so no real-ε claim is made here. Closes
+  the downstream integration item flagged in
+  docs/specs/1_1_prereq_dp_plugpoint.md §4.5. Prerequisite for 1.1.b.
 - [ ] 1.1.b Run the sweep both without DP and with DP at each pilot
-  ε ∈ {1, 3, 5, 10}, δ = 1e-5. DP changes the utility landscape —
+  ε ∈ {1, 3, 5, 10}, δ = 1e-5 (builds on the wired DP path from 1.1.a′). DP
+  changes the utility landscape —
   `max_depth` and `min_child_weight` in particular trade off differently
   under histogram noise.
   - **GATE (blocking) — independent DP/privacy review of the accountant

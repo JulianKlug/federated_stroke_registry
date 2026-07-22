@@ -130,14 +130,15 @@ def resolve_run_split(data, outcome, split_seed=42, holdout_frac=0.0,
     return train_df, valid_df
 
 
-def load_data_gva(context: Context):
-    """Load GVA data from the parquet file at the SuperNode's configured path.
+def _resolve_context_split(context: Context):
+    """Shared load + split contract for the SuperNode's configured data file.
 
-    Contract: read the file at `context.node_config["data-path"]`. No
-    cross-SuperNode partitioning inside — the file is authoritative. A local
-    train/valid holdout is still built here because `client_app.py`'s
-    `@evaluate()` needs a `valid_dmatrix`.
-    """
+    Reads `context.node_config["data-path"]` (no cross-SuperNode partitioning — the file is
+    authoritative), then applies the one `resolve_run_split` contract driven by run_config (all
+    default to today's flat seed-42 split, so an unconfigured run is byte-identical). Returns
+    `(train_df, valid_df, num_train, num_val)` already subset to FEATURE_COLS + TARGET_COL, so
+    both the DMatrix path (`load_data_gva`) and the raw-array DP path (`load_data_arrays`) train
+    and evaluate on EXACTLY the same split at matched split-seed/holdout-frac/holdout-eval."""
     data_path = Path(context.node_config["data-path"])
 
     if not data_path.exists():
@@ -171,11 +172,44 @@ def load_data_gva(context: Context):
     num_val = len(valid_df)
     train_df = train_df[feature_cols + [target_col]]
     valid_df = valid_df[feature_cols + [target_col]]
+    return train_df, valid_df, num_train, num_val
+
+
+def load_data_gva(context: Context):
+    """Load GVA data from the parquet file at the SuperNode's configured path.
+
+    Contract: read the file at `context.node_config["data-path"]`. No
+    cross-SuperNode partitioning inside — the file is authoritative. A local
+    train/valid holdout is still built here because `client_app.py`'s
+    `@evaluate()` needs a `valid_dmatrix`.
+    """
+    feature_cols = FEATURE_COLS
+    target_col = TARGET_COL
+    train_df, valid_df, num_train, num_val = _resolve_context_split(context)
 
     train_dmatrix = xgb.DMatrix(train_df[feature_cols], label=train_df[target_col])
     valid_dmatrix = xgb.DMatrix(valid_df[feature_cols], label=valid_df[target_col])
 
     return train_dmatrix, valid_dmatrix, num_train, num_val
+
+
+def load_data_arrays(context: Context):
+    """Raw-numpy analog of load_data_gva for the DP learner (§4.5), which consumes `X, y` arrays
+    (NOT a DMatrix). Returns `(X_train, y_train, X_valid, y_valid, num_train, num_val)` via the
+    SAME `_resolve_context_split` contract, so the DP arm trains/evaluates on exactly the split
+    the XGB arm does at matched split-seed/holdout-frac/holdout-eval. X columns are exactly
+    FEATURE_COLS order (== FEATURE_RANGES order, §3.9); y is TARGET_COL. Additive — the DMatrix
+    path is untouched."""
+    feature_cols = FEATURE_COLS
+    target_col = TARGET_COL
+    train_df, valid_df, num_train, num_val = _resolve_context_split(context)
+
+    X_train = train_df[feature_cols].to_numpy(dtype=float)
+    y_train = train_df[target_col].to_numpy(dtype=float)
+    X_valid = valid_df[feature_cols].to_numpy(dtype=float)
+    y_valid = valid_df[target_col].to_numpy(dtype=float)
+
+    return X_train, y_train, X_valid, y_valid, num_train, num_val
 
 
 def replace_keys(input_dict, match="-", target="_"):

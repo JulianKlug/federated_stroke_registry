@@ -158,3 +158,18 @@
   → 4 artifacts, ⚠ noise-tier banners; V4 `eval_final_model.py --holdout-eval` reproduced the HELD
   AUC-ROC to fp identity (0.8005 / 0.7705). Deliverable ranges await the same commands on real
   frozen-schema data (`--data-provenance real-frozen-schema`) — the hand-off to 1.1.b / v1.3 (1.3.b′).
+
+- 2026-07-22 — 1.1.a′ DP → FL integration landed (docs/specs/1_1_a_prime_dp_fl_integration.md):
+  the single-site DP seam is now wired into the live 2-SuperNode federation. `DPBooster` gains JSON
+  serialization (`dp-gbdt-v1`); the boost loop is refactored into a shared `_grow_trees` core so
+  `train_dp_gbdt` stays byte-identical and a new `dp_local_boost` resumes from the global's margins;
+  `DPFedXgbBagging` concatenates DP trees, cyclic reuses `OrderedFedXgbCyclic` unchanged. Accounting
+  is run-level per busiest site: σ calibrated once to `n_rel = 2·D·per_site` (cyclic uses
+  `⌈num_rounds/num_sites⌉`); noise seeded from public `(base_seed, round, site)` only. No config keys
+  added, accountant math untouched.
+  **Validated on the EXAMPLE Geneva halves only — NOT a real-ε claim (that sweep is 1.1.b):** V1
+  `pytest` 198/198; V2 torch-free import under `uv sync --no-dev`; V3 non-DP path byte-identical; V4-bag
+  + V5-cyc DP gaussian (ε=30) complete over TLS — server logs ε 29.99998917 / σ 2.83742 /
+  `num_releases=160`; V-DP `eval_final_model.py` auto-detects `dp-gbdt-v1` and reproduces the
+  federated evaluate AUC to fp identity. Turns 1.1.b into "the 1.1.a sweep + DP arms" with no new
+  orchestration.

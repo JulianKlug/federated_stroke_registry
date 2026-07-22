@@ -20,6 +20,7 @@ import pandas as pd
 import xgboost as xgb
 from flwr.common.config import unflatten_dict
 
+from fed_stroke.dp import DPBooster
 from fed_stroke.metrics import compute_binary_metrics
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
 from fed_stroke.task import replace_keys, resolve_run_split
@@ -177,9 +178,16 @@ def score_booster_on_half(bst, data_path, operating_point, n_boot, boot_seed,
         data_path, split_seed=split_seed, holdout_frac=holdout_frac,
         holdout_eval=holdout_eval,
     )
-    valid_dmatrix = xgb.DMatrix(valid_df[FEATURE_COLS], label=valid_df[TARGET_COL])
-    y_prob = bst.predict(valid_dmatrix)
-    y_true = valid_dmatrix.get_label()
+    y_true = valid_df[TARGET_COL].to_numpy()
+    # Object-type dispatch (Decision 10): a DPBooster predicts on raw X (no DMatrix); an
+    # xgb.Booster keeps the current DMatrix path verbatim. Signature unchanged, so all call sites
+    # (check_fed_vs_pooled.py, run_hpo.py, eval_final_model.py, tests) pass their loaded object
+    # straight through. The metric math (compute_binary_metrics) is identical for both.
+    if isinstance(bst, DPBooster):
+        y_prob = bst.predict(valid_df[FEATURE_COLS].to_numpy(dtype=float))
+    else:
+        valid_dmatrix = xgb.DMatrix(valid_df[FEATURE_COLS], label=valid_df[TARGET_COL])
+        y_prob = bst.predict(valid_dmatrix)
     return compute_binary_metrics(
         y_true, y_prob, operating_point, n_boot=n_boot, boot_seed=boot_seed
     )

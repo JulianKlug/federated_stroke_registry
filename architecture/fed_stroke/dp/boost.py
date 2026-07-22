@@ -20,6 +20,8 @@ Geometric leaf clipping (`|w| ≤ clip_bound`) is POST-PROCESSING of the already
 (§3.8) — a utility/stability guard, NOT a privacy knob; it costs ZERO budget and ε is invariant
 to `clip_bound`.
 """
+import json
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -30,6 +32,10 @@ from fed_stroke.dp.accounting import (
     account_run_laplace,
     noise_multiplier_for_epsilon,
 )
+
+# Auto-detect marker written into every serialized DPBooster payload (§4.1/§4.8). The offline
+# loader (eval_final_model.py) sniffs this to route a model file to from_json_bytes vs XGBoost.
+DP_MODEL_FORMAT = "dp-gbdt-v1"
 
 # Sensitivity constants (§3.2). L2 drives the Gaussian arm, L1 the Laplace arm.
 # For binary:logistic, per-example g = p − y ∈ [−1, 1] and h = p(1−p) ∈ (0, 0.25], so
@@ -284,14 +290,50 @@ def _best_split(Gh, Hh, reg_lambda, min_child_weight):
     return best
 
 
+def _json_finite(obj):
+    """Recursive pre-pass run BEFORE json.dumps: replace every non-finite float (inf/nan) with
+    None, and cast numpy scalars (np.integer/np.floating) to native py int/float (§4.1, C-B1).
+
+    REQUIRED, not decorative: json.dumps(allow_nan=False) RAISES on a native float inf/nan, and
+    the `default=` hook is only invoked for types the encoder does NOT recognize — it never fires
+    for a recognized float — so inf/nan -> null cannot be done by default= alone. meta legitimately
+    carries inf (identity ε = ∞) and nan (Laplace σ), so those must be scrubbed here first; the
+    subsequent allow_nan=False is then only a belt-and-suspenders assert that nothing slipped
+    through (matches the repo artifact contract, server_app.py:195)."""
+    if isinstance(obj, dict):
+        return {k: _json_finite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_finite(v) for v in obj]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        obj = float(obj)
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    return obj
+
+
 class DPBooster:
-    """A trained DP-GBDT ensemble. Serialization + a DP-aware server aggregator are the
-    downstream FL-integration item (§4.5); this prototype only trains + predicts."""
-    def __init__(self, trees, base_margin, edges, max_bins):
+    """A trained DP-GBDT ensemble. Serialization (to_json_bytes/from_json_bytes) + a DP-aware
+    server aggregator (strategies.DPFedXgbBagging) wire it into the live federation (§4.1/§4.6)."""
+    def __init__(self, trees, base_margin, edges, max_bins,
+                 feature_ranges: dict | None = None, meta: dict | None = None):
         self.trees = trees                # list of nested-dict trees
         self.base_margin = base_margin
         self.edges = edges
         self.max_bins = max_bins
+        # feature_ranges: the {name:(lo,hi)} dict `edges` were built from — first-class because it
+        #   is UNRECOVERABLE from the numpy `edges` (names gone), and reaching for the module
+        #   FEATURE_RANGES at serialize time would drift edges for a custom-range booster (§4.1, C-B2).
+        # meta: accounting provenance (ε/σ/release-count + config block) that must survive the whole
+        #   dp_local_boost -> serialize -> merge -> re-serialize -> rebuild -> log/save chain, since a
+        #   reloaded/merged booster has NO mechanism to derive it from (Decision 11).
+        # Both DEFAULT to None so the transient per-round margin booster inside _grow_trees
+        # (DPBooster([tree], 0.0, edges, max_bins), never serialized) keeps its 4-arg construction.
+        # to_json_bytes RAISES if feature_ranges is None — a booster meant to cross the wire must
+        # carry it.
+        self.feature_ranges = feature_ranges
+        self.meta = meta
 
     def _tree_predict(self, tree, binned):
         out = np.zeros(binned.shape[0])
@@ -318,42 +360,72 @@ class DPBooster:
     def predict(self, X) -> np.ndarray:
         return _sigmoid(self.predict_margin(X))
 
+    def to_json_bytes(self) -> bytes:
+        """Serialize to JSON bytes (mirrors xgb Booster.save_raw('json')) so a DP ensemble crosses
+        the Flower transport as bytes in ArrayRecord["0"] exactly like an XGB model (§4.1).
 
-def train_dp_gbdt(X, y, boost: BoostParams, dp: DPConfig,
-                  feature_ranges: dict | None = None,
-                  mechanism: HistogramNoiseMechanism | None = None,
-                  rng: np.random.Generator | None = None) -> DPBooster:
-    """Minimal histogram GBDT with the DP mechanism as the ONLY place noise enters.
+        Emits self.meta VERBATIM (not re-derived from .mechanism — a merged/reloaded booster has
+        no mechanism). Edges are NOT stored: self.feature_ranges + max_bins reconstruct them on
+        load via the SAME fixed_bin_edges the writer used (no float drift at bin boundaries,
+        byte-identical edges across sites/rounds). The FULL payload passes through _json_finite()
+        FIRST (inf/nan -> null, numpy scalars -> py), THEN json.dumps(allow_nan=False) as a
+        belt-and-suspenders assert that nothing non-finite slipped through."""
+        if self.feature_ranges is None:
+            raise ValueError(
+                "DPBooster.to_json_bytes requires feature_ranges (a wire-bound booster must carry "
+                "the {name:(lo,hi)} dict its edges were built from); got None."
+            )
+        payload = {
+            "format": DP_MODEL_FORMAT,
+            "trees": self.trees,
+            "base_margin": float(self.base_margin),
+            "feature_ranges": {k: [float(lo), float(hi)]
+                               for k, (lo, hi) in self.feature_ranges.items()},
+            "max_bins": int(self.max_bins),
+            "meta": self.meta or {},
+        }
+        return json.dumps(_json_finite(payload), allow_nan=False).encode("utf-8")
 
-    Per node (depth < max_depth): bin rows -> accumulate (G,H) per feature -> mechanism.add_noise
-    -> pick split by argmax noised gain -> reject children with noised H < min_child_weight.
-    Leaf weight is summed from the already-noised parent histogram (never re-queried), then
-    geometric-clipped (post-processing, ZERO ε; §3.8). base_margin = logit(base_score) is a
-    constant (data-independent). DP mode requires fixed-range (data-independent) bins and forces
-    q=1.0 accounting (§3.5/§3.7).
-    """
-    X = np.asarray(X, dtype=float)
-    y = np.asarray(y, dtype=float)
-    n, d = X.shape
-    if rng is None:
-        rng = np.random.default_rng(boost.seed)
-    if mechanism is None:
-        mechanism = make_mechanism(dp, boost, d)
-
-    # Bin edges: data-independent (fixed range) is mandatory under DP; quantile only off-DP.
-    if dp.enabled and dp.bin_strategy != "fixed_range":
-        raise ValueError(
-            f"DP mode requires bin_strategy='fixed_range' (data-independent, DP-safe); "
-            f"got {dp.bin_strategy!r} (§3.7)."
+    @classmethod
+    def from_json_bytes(cls, data: bytes) -> "DPBooster":
+        """Inverse of to_json_bytes: parse JSON, reconstruct edges via
+        fixed_bin_edges(feature_ranges, max_bins), rebuild the DPBooster with feature_ranges +
+        meta restored. Raises ValueError if data is empty or the format marker is absent/unknown
+        (a wrong-format model must fail loudly, never predict garbage)."""
+        if not data:
+            raise ValueError("DPBooster.from_json_bytes: empty bytes (no model).")
+        payload = json.loads(bytes(data).decode("utf-8"))
+        if payload.get("format") != DP_MODEL_FORMAT:
+            raise ValueError(
+                f"DPBooster.from_json_bytes: unknown/absent format marker "
+                f"{payload.get('format')!r} (expected {DP_MODEL_FORMAT!r})."
+            )
+        feature_ranges = {k: (float(lo), float(hi))
+                          for k, (lo, hi) in payload["feature_ranges"].items()}
+        max_bins = int(payload["max_bins"])
+        edges = fixed_bin_edges(feature_ranges, max_bins)
+        return cls(
+            trees=payload["trees"],
+            base_margin=float(payload["base_margin"]),
+            edges=edges,
+            max_bins=max_bins,
+            feature_ranges=feature_ranges,
+            meta=payload.get("meta") or {},
         )
-    if dp.bin_strategy == "quantile" and not dp.enabled:
-        edges = quantile_bin_edges(X, dp.max_bins)
-    else:
-        fr = feature_ranges if feature_ranges is not None else FEATURE_RANGES
-        edges = fixed_bin_edges(fr, dp.max_bins)
 
-    binned = _binize(X, edges, dp.max_bins)
-    base_margin = _logit(boost.base_score)
+
+def _grow_trees(binned, y, edges, boost: BoostParams, dp: DPConfig, mechanism, rng,
+                init_margin: np.ndarray, num_rounds: int) -> list:
+    """The boost loop + nested split-finder, lifted VERBATIM from train_dp_gbdt so the noise
+    logic lives in exactly ONE place (§4.2, Decision 3). Grows `num_rounds` trees starting from
+    `init_margin` (a constant base_margin for a fresh fit, or the incoming global model's margins
+    for a federated continuation — DP sensitivity is margin-invariant, §3.2). The ONLY place noise
+    enters stays mechanism.add_noise inside build(). Returns the list of new nested-dict trees.
+
+    `build` closes over the per-round `g`/`h` (reassigned each iteration) exactly as before, so
+    trees are bitwise-identical to the pre-refactor loop at a fixed rng (pinned, §4.9 case 8)."""
+    y = np.asarray(y, dtype=float)
+    n, d = binned.shape
     lam, mcw, eta, clip = boost.reg_lambda, boost.min_child_weight, boost.eta, dp.clip_bound
     max_depth, max_bins = boost.max_depth, dp.max_bins
 
@@ -389,9 +461,9 @@ def train_dp_gbdt(X, y, boost: BoostParams, dp: DPConfig,
         }
 
     all_rows = np.arange(n)
-    margin = np.full(n, base_margin, dtype=float)
+    margin = np.asarray(init_margin, dtype=float).copy()
     trees = []
-    for _ in range(boost.num_boost_round):
+    for _ in range(num_rounds):
         p = _sigmoid(margin)
         g = p - y                 # gradient  ∈ [-1, 1]
         h = p * (1.0 - p)         # hessian   ∈ (0, 0.25]
@@ -399,8 +471,170 @@ def train_dp_gbdt(X, y, boost: BoostParams, dp: DPConfig,
         trees.append(tree)
         booster_step = DPBooster([tree], 0.0, edges, max_bins)
         margin = margin + booster_step._tree_predict(tree, binned)
+    return trees
 
-    booster = DPBooster(trees, base_margin, edges, max_bins)
+
+def _mechanism_meta(mechanism, dp: DPConfig, boost: BoostParams, train_method: str,
+                    per_site_trees: int | None = None) -> dict:
+    """Accounting provenance for DPBooster.meta, read at save/log time from a reloaded booster
+    that no longer has a mechanism (Decision 11, §4.1). num_releases/noise_multiplier/
+    reported_epsilon come straight off the RUN-CALIBRATED mechanism; the dp block records the
+    knobs. Non-finite values (identity ε=∞, Laplace σ=nan) are scrubbed to null on serialize."""
+    if per_site_trees is None:
+        # 2·D·per_site releases -> per_site = releases // (2·max_depth) (§3.3).
+        per_site_trees = (mechanism.num_releases // (2 * boost.max_depth)
+                          if boost.max_depth else None)
+    return {
+        "train_method": train_method,
+        "per_site_trees": per_site_trees,
+        "num_releases": int(mechanism.num_releases),
+        "noise_multiplier": float(mechanism.noise_multiplier),
+        "reported_epsilon": float(mechanism.reported_epsilon),
+        "dp": {
+            "enabled": dp.enabled,
+            "mechanism": dp.mechanism,
+            "target_epsilon": dp.target_epsilon,
+            "delta": dp.delta,
+            "clip_bound": dp.clip_bound,
+            "max_bins": dp.max_bins,
+            "bin_strategy": dp.bin_strategy,
+        },
+        "fed_run_config": {},
+    }
+
+
+def train_dp_gbdt(X, y, boost: BoostParams, dp: DPConfig,
+                  feature_ranges: dict | None = None,
+                  mechanism: HistogramNoiseMechanism | None = None,
+                  rng: np.random.Generator | None = None) -> DPBooster:
+    """Minimal histogram GBDT with the DP mechanism as the ONLY place noise enters.
+
+    Now a THIN wrapper over _grow_trees (init_margin = logit(base_score), num_rounds =
+    boost.num_boost_round), so behavior is byte-identical to the pre-refactor loop (§4.2 case 8);
+    the prototype/demo/single-site tests are untouched.
+
+    Per node (depth < max_depth): bin rows -> accumulate (G,H) per feature -> mechanism.add_noise
+    -> pick split by argmax noised gain -> reject children with noised H < min_child_weight.
+    Leaf weight is summed from the already-noised parent histogram (never re-queried), then
+    geometric-clipped (post-processing, ZERO ε; §3.8). base_margin = logit(base_score) is a
+    constant (data-independent). DP mode requires fixed-range (data-independent) bins and forces
+    q=1.0 accounting (§3.5/§3.7).
+    """
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    n, d = X.shape
+    if rng is None:
+        rng = np.random.default_rng(boost.seed)
+    if mechanism is None:
+        mechanism = make_mechanism(dp, boost, d)
+
+    # Bin edges: data-independent (fixed range) is mandatory under DP; quantile only off-DP.
+    if dp.enabled and dp.bin_strategy != "fixed_range":
+        raise ValueError(
+            f"DP mode requires bin_strategy='fixed_range' (data-independent, DP-safe); "
+            f"got {dp.bin_strategy!r} (§3.7)."
+        )
+    if dp.bin_strategy == "quantile" and not dp.enabled:
+        edges = quantile_bin_edges(X, dp.max_bins)
+        fr = None
+    else:
+        fr = feature_ranges if feature_ranges is not None else FEATURE_RANGES
+        edges = fixed_bin_edges(fr, dp.max_bins)
+
+    binned = _binize(X, edges, dp.max_bins)
+    base_margin = _logit(boost.base_score)
+    init_margin = np.full(n, base_margin, dtype=float)
+    trees = _grow_trees(binned, y, edges, boost, dp, mechanism, rng,
+                        init_margin, boost.num_boost_round)
+
+    booster = DPBooster(trees, base_margin, edges, dp.max_bins,
+                        feature_ranges=fr,
+                        meta=_mechanism_meta(mechanism, dp, boost, train_method="single-site"))
     # Expose what the mechanism accounted, so the demo/tests can read σ, ε, and the release count.
     booster.mechanism = mechanism
     return booster
+
+
+def per_site_tree_budget(train_method: str, num_rounds: int, num_sites: int,
+                         local_epochs: int) -> int:
+    """Trees the BUSIEST site grows across the WHOLE run — the per-patient release count that
+    calibrates σ once for the run (§3.3/§3.4).
+
+    bagging: num_rounds * local_epochs  (every site trains every round; == total_trees//num_sites)
+    cyclic : ceil(num_rounds / num_sites) * local_epochs  (one site/round; the site that trains
+             the most rounds releases the most). NEVER total_trees//num_sites for cyclic: when
+             num_rounds % num_sites != 0 that under-reports the busiest site's ε (§3.4, Risk 1).
+    """
+    if train_method == "bagging":
+        return num_rounds * local_epochs
+    if train_method == "cyclic":
+        return math.ceil(num_rounds / num_sites) * local_epochs
+    raise ValueError(f"Unknown train-method: {train_method!r}")
+
+
+def dp_local_boost(global_booster, X, y, boost: BoostParams, dp: DPConfig, mechanism, rng,
+                   num_local_round: int, train_method: str) -> DPBooster:
+    """DP analog of client_app._local_boost: resume boosting from the incoming global model's
+    margins and grow only THIS round's trees (§4.2).
+
+    `boost` is the GROWTH params (num_boost_round == num_local_round). `mechanism` is the
+    RUN-CALIBRATED mechanism (σ fixed to n_rel = 2·D·T_site, §4.3) — passed in, never rebuilt
+    here. `rng` is the per-round, per-site generator the caller seeds from public
+    (base_seed, global_round, site) (§3.5) — passed in and forwarded verbatim to _grow_trees, so
+    noise is independent across rounds and sites. Both are NEVER defaulted: a missing rng would
+    silently collapse to boost.seed and draw identical noise every round (the C-A1 failure this
+    signature exists to prevent).
+
+    Binning/edges are data-independent, so continuation reuses the global's edges/feature_ranges
+    (identical to a fresh build). round 1 (global_booster is None): fresh fit from logit(base_score).
+    Bagging returns only the NEW trees; cyclic returns global.trees + new trees (mirrors
+    _local_boost's slice-vs-full, client_app.py:34-42)."""
+    # Parity with train_dp_gbdt: DP mode is fixed-range only (§4.2). dp_local_boost always builds
+    # fixed_bin_edges, so guard explicitly or an illegal dp.bin-strategy='quantile' runs
+    # silently-safe here while train_dp_gbdt raises — a behavioral split for the same config.
+    if dp.enabled and dp.bin_strategy != "fixed_range":
+        raise ValueError(
+            f"DP mode requires bin_strategy='fixed_range' (data-independent, DP-safe); "
+            f"got {dp.bin_strategy!r} (§3.7)."
+        )
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    base_margin = _logit(boost.base_score)
+
+    if global_booster is None:
+        fr = FEATURE_RANGES
+        edges = fixed_bin_edges(fr, dp.max_bins)
+        init_margin = np.full(X.shape[0], base_margin, dtype=float)
+    else:
+        fr = global_booster.feature_ranges
+        edges = global_booster.edges
+        init_margin = global_booster.predict_margin(X)
+
+    binned = _binize(X, edges, dp.max_bins)
+    new_trees = _grow_trees(binned, y, edges, boost, dp, mechanism, rng,
+                           init_margin, num_local_round)
+
+    if train_method == "cyclic" and global_booster is not None:
+        trees = list(global_booster.trees) + new_trees   # full ensemble adopted wholesale
+    else:
+        trees = new_trees                                 # bagging: this round's new trees only
+
+    meta = _mechanism_meta(mechanism, dp, boost, train_method=train_method)
+    booster = DPBooster(trees, base_margin, edges, dp.max_bins, feature_ranges=fr, meta=meta)
+    booster.mechanism = mechanism
+    return booster
+
+
+def assert_dp_roundtrip(booster: "DPBooster", X) -> None:
+    """Tests-only tripwire (mirrors baseline.assert_prediction_roundtrip): a booster reloaded from
+    its own to_json_bytes must predict bitwise-identically on X. NOT used by the server aggregator
+    — the server has no feature data X, so it does the structural check (feature_ranges/base_margin/
+    max_bins equality across replies) instead (§4.1, C-A3)."""
+    reloaded = DPBooster.from_json_bytes(booster.to_json_bytes())
+    y_before = booster.predict(X)
+    y_after = reloaded.predict(X)
+    if not np.array_equal(y_before, y_after):
+        n_diff = int(np.sum(y_before != y_after))
+        raise ValueError(
+            f"DPBooster serialization round-trip not a fixed point: {n_diff} predictions differ."
+        )

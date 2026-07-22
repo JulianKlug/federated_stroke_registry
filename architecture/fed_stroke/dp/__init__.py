@@ -9,25 +9,31 @@ stays a minimal, torch-free seam (acceptance §7.6). The synthetic generator
 (`fed_stroke.dp.synthetic`) is a dev/test helper and is imported explicitly where needed.
 """
 from fed_stroke.dp.boost import (
+    DP_MODEL_FORMAT,
     DPBooster,
     DPConfig,
     BoostParams,
     FEATURE_RANGES,
     HistogramNoiseMechanism,
+    dp_local_boost,
     make_mechanism,
     num_gaussian_releases,
     num_histogram_queries,
+    per_site_tree_budget,
     train_dp_gbdt,
 )
 
 __all__ = [
+    "DP_MODEL_FORMAT",
     "DPBooster",
     "DPConfig",
     "BoostParams",
     "FEATURE_RANGES",
     "HistogramNoiseMechanism",
+    "dp_local_boost",
     "make_mechanism",
     "num_gaussian_releases",
     "num_histogram_queries",
+    "per_site_tree_budget",
     "train_dp_gbdt",
 ]

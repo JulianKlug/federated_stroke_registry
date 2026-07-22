@@ -166,3 +166,44 @@ def test_train_round_matches_single_xgb_train_auc():
 
     assert fixed_auc >= reference_auc - 0.03      # tracks the single-process fit
     assert fixed_auc >= fixed_seed_auc + 0.10     # recovers the collapsed AUC
+
+
+# --- Case 9 (spec 1.1.a′ §4.9): the DP wiring must not perturb the non-DP path.
+# `_train_round` reply bytes are byte-identical to a reference captured on pre-change `main`
+# (the DP branch lives entirely under `dp.enabled`, so this is a structural guarantee, pinned
+# here as a hash so a future edit to the shared refactor can't silently drift the non-DP bytes). ---
+
+# Pinned data + params mirror pyproject's [tool.flwr.app.config] params.* at seed 0.
+_REGRESSION_PARAMS = {
+    "objective": "binary:logistic", "eta": 0.1, "max_depth": 4,
+    "min_child_weight": 5, "eval_metric": "auc", "nthread": 1,
+    "num_parallel_tree": 1, "subsample": 0.8, "colsample_bytree": 0.8,
+    "tree_method": "hist", "seed": 0,
+}
+# sha256 of bst.save_raw("json") captured on main BEFORE the DP-integration change.
+_REF_BAGGING_R1 = "ba1b557396a84dc532cacd3eac4e039441e6106ee0acdf5e0fa7199e95957472"
+_REF_BAGGING_R2 = "3f4fc31819efa62f12cb353b167f884e81ce23f8a67581050d5a57da9d9cc351"
+_REF_CYCLIC_R2 = "31e66d990821c6bf5921b75b2428becc015713b29f39762a7967dde8b600741d"
+
+
+def _regression_dmatrix():
+    rng = np.random.RandomState(0)
+    X = rng.rand(40, 2)
+    y = (X[:, 0] + X[:, 1] > 1.0).astype(int)
+    return xgb.DMatrix(X, label=y)
+
+
+def test_non_dp_train_round_bytes_are_byte_identical_to_main():
+    import hashlib
+
+    dm = _regression_dmatrix()
+    sha = lambda b: hashlib.sha256(bytes(b.save_raw("json"))).hexdigest()
+
+    b1 = _train_round(dict(_REGRESSION_PARAMS), 1, 1, dm, "bagging", None)
+    raw1 = bytearray(b1.save_raw("json"))
+    b2 = _train_round(dict(_REGRESSION_PARAMS), 2, 1, dm, "bagging", raw1)
+    c2 = _train_round(dict(_REGRESSION_PARAMS), 2, 1, dm, "cyclic", raw1)
+
+    assert sha(b1) == _REF_BAGGING_R1     # round-1 fresh train (bagging == cyclic here)
+    assert sha(b2) == _REF_BAGGING_R2     # bagging continuation (only new trees)
+    assert sha(c2) == _REF_CYCLIC_R2      # cyclic continuation (full ensemble)
