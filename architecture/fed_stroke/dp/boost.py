@@ -32,10 +32,16 @@ from fed_stroke.dp.accounting import (
     account_run_laplace,
     noise_multiplier_for_epsilon,
 )
+from fed_stroke.schema import MISSING_SENTINEL
 
 # Auto-detect marker written into every serialized DPBooster payload (§4.1/§4.8). The offline
 # loader (eval_final_model.py) sniffs this to route a model file to from_json_bytes vs XGBoost.
-DP_MODEL_FORMAT = "dp-gbdt-v1"
+# v2 (2026-07-23): fixed_bin_edges reserves bin 0 for the missing sentinel (REMOVE-IF-NO-DP),
+# so v1 models' stored (feature_ranges, max_bins) would reconstruct DIFFERENT edges than they
+# were trained with — the version bump makes stale v1 artifacts fail LOUDLY at load instead of
+# silently predicting through shifted bins. All v1 artifacts predate the 1.1.a″ remediation
+# (public-seeded noise, non-deduped cohort) and must not be scored anyway.
+DP_MODEL_FORMAT = "dp-gbdt-v2"
 
 # Sensitivity constants (§3.2). L2 drives the Gaussian arm, L1 the Laplace arm.
 # For binary:logistic, per-example g = p − y ∈ [−1, 1] and h = p(1−p) ∈ (0, 0.25], so
@@ -48,7 +54,9 @@ H_L1_PER_FEATURE = 0.25     # per-feature L1                          (Laplace)
 DENOM_FLOOR = 1e-3          # min positive (H+λ) after noise, so gain never divides by <=0 (§3.3/§8.3)
 
 # Public, data-INDEPENDENT clinical ranges -> DP-safe fixed bin edges (§3.7). ONE home; imported
-# (never redefined) by fed_stroke.dp.synthetic. Keyed to the frozen FEATURE_COLS.
+# (never redefined) by fed_stroke.dp.synthetic. Keyed to the frozen FEATURE_COLS. These stay the
+# REAL clinical ranges — the missing-sentinel bin is reserved structurally by fixed_bin_edges
+# (REMOVE-IF-NO-DP), never by widening these values.
 FEATURE_RANGES = {"Age (calc.)": (0.0, 120.0), "NIH on admission": (0.0, 42.0)}
 
 
@@ -64,6 +72,11 @@ class DPConfig:
     max_bins: int = 32
     bin_strategy: str = "fixed_range"  # "fixed_range" (DP-safe) | "quantile" (non-DP arms only)
     noise_multiplier: float | None = None   # if set, ε is REPORTED not targeted
+    # noise_seed: NEVER a production knob. DP noise draws from OS entropy (R2); a config that
+    # seeds the noise stream fail-closes in from_run_config unless the insecure_test escape
+    # hatch is set AND the run is not on real frozen-schema data.
+    noise_seed: int | None = None
+    insecure_test: bool = False
 
     @classmethod
     def from_run_config(cls, cfg: dict) -> "DPConfig":
@@ -72,11 +85,34 @@ class DPConfig:
         Keys arrive with `-`→`_` already applied to KEYS by replace_keys; enum-like VALUES
         (e.g. bin-strategy = "fixed-range") keep their dash, so normalize the string values
         `-`→`_` here so `"fixed-range"` maps to the `"fixed_range"` field value.
+
+        Fail-closed (R2): a `dp.noise-seed` key with `dp.enabled = true` is REFUSED — noise
+        seeded from any config input breaks the DP inequality at every ε (reviewer A, finding 1;
+        Opacus secure mode likewise prohibits user seeds). The only escape is the explicit
+        `dp.insecure-test = true` hatch, itself rejected when `data-provenance` is
+        "real-frozen-schema": no run whose ε could be claimed on real patients may ever draw
+        deterministic noise.
         """
         dp = cfg.get("dp", {})
 
         def norm(v):
             return v.replace("-", "_") if isinstance(v, str) else v
+
+        if dp.get("noise_seed") is not None and dp.get("enabled", cls.enabled):
+            insecure = bool(dp.get("insecure_test", False))
+            provenance = cfg.get("data_provenance", "example-halves")
+            if not insecure:
+                raise ValueError(
+                    "dp.noise-seed with dp.enabled = true is refused: DP noise must draw fresh "
+                    "OS entropy (R2). Deterministic noise is injection-only (tests) or requires "
+                    "the explicit dp.insecure-test = true escape hatch on non-real data."
+                )
+            if provenance == "real-frozen-schema":
+                raise ValueError(
+                    "dp.insecure-test cannot seed DP noise on real-frozen-schema data: a run "
+                    "whose ε could be claimed on real patients must never draw deterministic "
+                    "noise (R2)."
+                )
 
         return cls(
             enabled=dp.get("enabled", cls.enabled),
@@ -87,6 +123,8 @@ class DPConfig:
             max_bins=int(dp.get("max_bins", cls.max_bins)),
             bin_strategy=norm(dp.get("bin_strategy", cls.bin_strategy)),
             noise_multiplier=dp.get("noise_multiplier", cls.noise_multiplier),
+            noise_seed=dp.get("noise_seed", cls.noise_seed),
+            insecure_test=bool(dp.get("insecure_test", cls.insecure_test)),
         )
 
 
@@ -132,9 +170,23 @@ def num_gaussian_releases(boost: BoostParams) -> int:
 
 def fixed_bin_edges(feature_ranges: dict, max_bins: int) -> list[np.ndarray]:
     """Data-INDEPENDENT bin edges over public ranges (§3.7). One edge array per feature, in the
-    dict's insertion order (which must match the X column order = FEATURE_COLS)."""
+    dict's insertion order (which must match the X column order = FEATURE_COLS).
+
+    REMOVE-IF-NO-DP (missingness policy variant 1, 2026-07-23): bin 0 is RESERVED for the
+    public MISSING_SENTINEL — edges are [sentinel, linspace(lo, hi, max_bins)], so the sentinel
+    lands in bin 0 and every real value ≥ lo lands in bins 1..max_bins-1, for ANY max_bins
+    (the bin-0/bin-1 boundary is exactly lo, never a fraction of the range). Still fully
+    data-independent and public; a record still lands in exactly ONE bin per feature, so the
+    sensitivity bounds and the accounting are untouched. Cost: max_bins-1 (not max_bins) bins
+    of real-value resolution."""
+    for name, (lo, hi) in feature_ranges.items():
+        if lo <= MISSING_SENTINEL:
+            raise ValueError(
+                f"feature range for {name!r} starts at {lo}, not above the missing sentinel "
+                f"{MISSING_SENTINEL} — bin 0 could not separate missing from real values."
+            )
     return [
-        np.linspace(lo, hi, max_bins + 1)
+        np.concatenate(([MISSING_SENTINEL], np.linspace(lo, hi, max_bins)))
         for (lo, hi) in feature_ranges.values()
     ]
 
@@ -207,6 +259,11 @@ class _LaplaceMechanism:
 def make_mechanism(dp: DPConfig, boost: BoostParams, num_features: int) -> HistogramNoiseMechanism:
     """Factory. dp.enabled=False -> identity (no-op, ε=∞).
 
+    dp.mechanism="identity" WITH dp.enabled=True is the R9 comparator arm B: the DP learner
+    (same fixed binning, same q=1.0, same tree code as arm C) with the noise turned off. It
+    releases nothing under a DP claim (ε=∞ reported, ZERO releases, never enters the R6
+    ledger); the 1.1.b privacy-cost headline is B→C, which differs ONLY in this mechanism.
+
     Gaussian (primary): n_rel = num_gaussian_releases(boost) = 2·D·T. σ is calibrated to
     dp.target_epsilon at q=1.0 (or pinned via dp.noise_multiplier, in which case ε is REPORTED).
     Per-feature std = σ·√d·G_L2 (G) and σ·√d·H_L2 (H). Feeding n_rel (not D·T) is load-bearing
@@ -215,7 +272,7 @@ def make_mechanism(dp: DPConfig, boost: BoostParams, num_features: int) -> Histo
     Laplace (secondary, L1): split dp.target_epsilon evenly across n_rel = 2·D·T releases;
     per-feature scales b_G = n_rel·d·G_L1/ε, b_H = n_rel·d·H_L1/ε (uses `d`, NOT `√d`).
     """
-    if not dp.enabled:
+    if not dp.enabled or dp.mechanism == "identity":
         return _IdentityMechanism()
 
     d = num_features
@@ -240,7 +297,9 @@ def make_mechanism(dp: DPConfig, boost: BoostParams, num_features: int) -> Histo
                     + account_run_laplace(k, d * H_L1_PER_FEATURE, b_h))
         return _LaplaceMechanism(b_g, b_h, reported, n_rel)
 
-    raise ValueError(f"unknown dp.mechanism={dp.mechanism!r} (expected 'gaussian' | 'laplace')")
+    raise ValueError(
+        f"unknown dp.mechanism={dp.mechanism!r} (expected 'gaussian' | 'laplace' | 'identity')"
+    )
 
 
 # ------------------------------------------------------------------------ learner
@@ -431,7 +490,12 @@ def _grow_trees(binned, y, edges, boost: BoostParams, dp: DPConfig, mechanism, r
 
     def build(rows, depth, inherited):
         # inherited = (G_total, H_total) from the parent's noised histogram, or None at the root.
-        if depth >= max_depth or rows.shape[0] == 0:
+        # ONLY the depth cap may leaf-exit before the query: whether the noised histogram is
+        # issued must never depend on the raw partition (rows.shape[0] == 0 skipping the query
+        # made "query issued at all" a data-dependent event — reviewer B F4, spec 1.1.a″ R1).
+        # Empty rows -> np.bincount over empty arrays -> all-zero histograms -> the release is
+        # pure noise; 2·D·T already charges for it, and parallel composition is unaffected.
+        if depth >= max_depth:
             g_t, h_t = inherited if inherited is not None else (0.0, 0.0)
             return {"leaf": _leaf_weight(g_t, h_t, eta, lam, clip)}
         # Per-feature (G, H) histograms over this node's rows -> ONE level release (noised).
@@ -481,9 +545,14 @@ def _mechanism_meta(mechanism, dp: DPConfig, boost: BoostParams, train_method: s
     reported_epsilon come straight off the RUN-CALIBRATED mechanism; the dp block records the
     knobs. Non-finite values (identity ε=∞, Laplace σ=nan) are scrubbed to null on serialize."""
     if per_site_trees is None:
-        # 2·D·per_site releases -> per_site = releases // (2·max_depth) (§3.3).
-        per_site_trees = (mechanism.num_releases // (2 * boost.max_depth)
-                          if boost.max_depth else None)
+        if mechanism.num_releases == 0:
+            # Identity (arm B): no releases, so there is no per-site accounting budget to
+            # report — None (-> null on serialize), never a misleading 0.
+            per_site_trees = None
+        else:
+            # 2·D·per_site releases -> per_site = releases // (2·max_depth) (§3.3).
+            per_site_trees = (mechanism.num_releases // (2 * boost.max_depth)
+                              if boost.max_depth else None)
     return {
         "train_method": train_method,
         "per_site_trees": per_site_trees,
@@ -524,7 +593,12 @@ def train_dp_gbdt(X, y, boost: BoostParams, dp: DPConfig,
     y = np.asarray(y, dtype=float)
     n, d = X.shape
     if rng is None:
-        rng = np.random.default_rng(boost.seed)
+        # DP mode defaults to FRESH OS ENTROPY (R2): no seed — not boost.seed, not any public
+        # input — may feed the noise stream, or the DP inequality fails at every ε for δ < 1
+        # (reviewer A, finding 1). Deterministic noise is injection-only (pass rng explicitly,
+        # tests). Off-DP the rng is inert for noise (identity mechanism), so the seeded default
+        # keeps the non-DP learner reproducible.
+        rng = np.random.default_rng(None if dp.enabled else boost.seed)
     if mechanism is None:
         mechanism = make_mechanism(dp, boost, d)
 

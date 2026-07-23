@@ -21,7 +21,7 @@ import xgboost as xgb
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fed_stroke.baseline import score_booster_on_half  # noqa: E402
-from fed_stroke.dp import DP_MODEL_FORMAT, DPBooster  # noqa: E402
+from fed_stroke.dp import DPBooster  # noqa: E402
 
 
 def main() -> None:
@@ -59,13 +59,16 @@ def main() -> None:
     args = parser.parse_args()
 
     # File-format sniff at the loader — the one place the model file is opened (§4.8, Decision 10).
-    # A DP model carries "format": "dp-gbdt-v1"; an XGB model does not. Without this branch the
-    # hard-coded xgb.Booster().load_model throws on a DP JSON.
+    # A DP model carries "format": "dp-gbdt-v*"; an XGB model does not. Without this branch the
+    # hard-coded xgb.Booster().load_model throws on a DP JSON. The sniff routes on the PREFIX so
+    # a stale-version DP artifact reaches DPBooster.from_json_bytes and fails with the clear
+    # version-mismatch error, never a cryptic XGBoost parse error.
     data = args.model.read_bytes()
     try:
-        is_dp = json.loads(data.decode("utf-8")).get("format") == DP_MODEL_FORMAT
+        fmt = json.loads(data.decode("utf-8")).get("format") or ""
+        is_dp = fmt.startswith("dp-gbdt-")
     except (ValueError, UnicodeDecodeError):
-        is_dp = False   # XGBoost's JSON is not our flat dp-gbdt-v1 payload
+        is_dp = False   # XGBoost's JSON is not our flat dp-gbdt payload
 
     if is_dp:
         bst = DPBooster.from_json_bytes(data)

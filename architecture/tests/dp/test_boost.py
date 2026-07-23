@@ -81,8 +81,14 @@ def test_histogram_sensitivity_bound():
 
     for f in range(d):
         changed = np.flatnonzero(~np.isclose(G0[f], G1[f]))
-        assert changed.size == 1                          # exactly one bin per feature
+        assert changed.size == 1                          # exactly one G bin per feature
         assert abs((G1[f] - G0[f]).sum()) <= 1.0 + 1e-9   # |ΔG| ≤ G_L1_PER_FEATURE
+        # H-side symmetric pin (R8, reviewer B F6): exactly one H bin moves per feature, and
+        # the PER-BIN delta — not just the summed delta — respects the 0.25 bound.
+        changed_h = np.flatnonzero(~np.isclose(H0[f], H1[f]))
+        assert changed_h.size == 1                        # exactly one H bin per feature
+        assert np.array_equal(changed_h, changed)         # the SAME bin the record landed in
+        assert abs(H1[f, changed_h[0]] - H0[f, changed_h[0]]) <= 0.25 + 1e-9
         assert abs((H1[f] - H0[f]).sum()) <= 0.25 + 1e-9  # |ΔH| ≤ H_L1_PER_FEATURE
 
 
@@ -206,13 +212,41 @@ def test_determinism_pinned_seed():
 
 
 def test_fixed_bin_edges_data_independent():
-    """Fixed-range edges depend only on feature_ranges + max_bins, never on X (§3.7)."""
+    """Fixed-range edges depend only on feature_ranges + max_bins, never on X (§3.7).
+    Bin 0 is reserved for the missing sentinel (REMOVE-IF-NO-DP): edges are
+    [sentinel, linspace(lo, hi, max_bins)], so bins 1..max_bins-1 cover the real range."""
+    from fed_stroke.schema import MISSING_SENTINEL
+
     e1 = B.fixed_bin_edges(B.FEATURE_RANGES, 32)
     e2 = B.fixed_bin_edges(B.FEATURE_RANGES, 32)
     for a, b in zip(e1, e2):
         assert np.array_equal(a, b)
-    assert np.array_equal(e1[0], np.linspace(0.0, 120.0, 33))
-    assert np.array_equal(e1[1], np.linspace(0.0, 42.0, 33))
+    assert np.array_equal(e1[0], np.concatenate(([MISSING_SENTINEL], np.linspace(0.0, 120.0, 32))))
+    assert np.array_equal(e1[1], np.concatenate(([MISSING_SENTINEL], np.linspace(0.0, 42.0, 32))))
+    assert all(len(e) == 33 for e in e1)          # max_bins + 1 edges -> max_bins bins
+    # A range that cannot separate missing from real fails loudly.
+    with pytest.raises(ValueError, match="sentinel"):
+        B.fixed_bin_edges({"bad": (-2.0, 10.0)}, 32)
+
+
+def test_missing_sentinel_bin_separation():
+    """REMOVE-IF-NO-DP: for ANY max_bins, the sentinel lands in the reserved bin 0 and every
+    real value in [lo, hi] lands in bins 1..max_bins-1 — the bin-0/bin-1 boundary is exactly lo,
+    so missing and real values can never share a bin (the pre-remediation searchsorted
+    fallthrough silently binned NaN into the TOP bin instead)."""
+    from fed_stroke.schema import MISSING_SENTINEL
+
+    for max_bins in (4, 8, 32, 64):
+        edges = B.fixed_bin_edges(B.FEATURE_RANGES, max_bins)
+        X = np.array([[MISSING_SENTINEL, MISSING_SENTINEL],   # missing both
+                      [0.0, 0.0],                             # exact lower bounds
+                      [120.0, 42.0],                          # exact upper bounds
+                      [65.0, MISSING_SENTINEL]])              # real age, missing NIHSS
+        binned = B._binize(X, edges, max_bins)
+        assert np.array_equal(binned[0], [0, 0])              # sentinel -> reserved bin 0
+        assert np.array_equal(binned[1], [1, 1])              # lo -> first REAL bin
+        assert np.array_equal(binned[2], [max_bins - 1, max_bins - 1])
+        assert binned[3, 0] >= 1 and binned[3, 1] == 0        # per-feature independence
 
 
 def test_dp_mode_rejects_quantile_bins():
@@ -244,6 +278,66 @@ def test_predict_range():
     b = train_dp_gbdt(X, y, DEMO_BOOST, DPConfig(enabled=False))
     p = b.predict(X)
     assert np.all((p > 0) & (p < 1))
+
+
+def test_empty_node_still_issues_histogram_query():
+    """R1 (reviewer B F4): whether the noised histogram is issued must NEVER depend on the raw
+    partition. A node with zero rows still queries at every depth < max_depth; only the depth cap
+    leaf-exits before the query. Uses a scripted counting mechanism that (a) records each node's
+    RAW histogram mass (empty node -> all-zero bincount -> H.sum() == 0) and (b) returns crafted
+    histograms that force a split at bin 0 while all data sits in bin 3, so the left child of
+    every split is empty by construction."""
+    max_bins, max_depth = 4, 3
+
+    class CountingMechanism:
+        # Split at bin 0 with positive gain and both children above min_child_weight:
+        # cumG=[-3,..], gain = 0.5·(9/2 + 9/2 − 0) > 0; HL=HR=1 ≥ mcw.
+        G_CRAFT = np.array([[-3.0, 0.0, 0.0, 3.0]])
+        H_CRAFT = np.array([[1.0, 0.0, 0.0, 1.0]])
+
+        def __init__(self):
+            self.raw_h_mass = []          # H.sum() of the RAW histogram at each query
+
+        def add_noise(self, G, H, rng):
+            self.raw_h_mass.append(float(H.sum()))
+            return self.G_CRAFT.copy(), self.H_CRAFT.copy()
+
+    n = 50
+    X = np.full((n, 1), 0.9)              # bin 3 of linspace(0,1,5) -> left of bin 0 is EMPTY
+    y = np.zeros(n)
+    edges = [np.linspace(0.0, 1.0, max_bins + 1)]
+    binned = B._binize(X, edges, max_bins)
+    boost = BoostParams(max_depth=max_depth, num_boost_round=1, min_child_weight=0.5)
+    dp = DPConfig(enabled=True, max_bins=max_bins)
+    mech = CountingMechanism()
+
+    trees = B._grow_trees(binned, y, edges, boost, dp, mech, np.random.default_rng(0),
+                          np.zeros(n), num_rounds=1)
+
+    assert len(trees) == 1
+    # Every node at depth < max_depth queries: 2^D − 1 = 7 queries for the full binary frontier
+    # (pre-R1 the empty subtrees would leaf-exit silently and only 3 queries would be issued).
+    assert len(mech.raw_h_mass) == 2 ** max_depth - 1 == 7
+    # The empty nodes (raw mass exactly 0) issued their queries too: the empty left child at
+    # depth 1, its two children at depth 2, and the empty left child of the data-carrying node.
+    assert sum(1 for m in mech.raw_h_mass if m == 0.0) == 4
+    assert sum(1 for m in mech.raw_h_mass if m > 0.0) == 3
+
+
+def test_sigma_table_reproduced_unchanged():
+    """1.1.a″ acceptance: the R1 guard split must not move the calibrated σ table — both reviewers
+    signed off on these values (ε = 1/3/5/10 at k = 160 releases, δ = 1e-5). Exact pins (the
+    bisection in noise_multiplier_for_epsilon is deterministic), spec quotes them at 2 dp."""
+    table = {
+        1: 51.170527747745616,
+        3: 18.88773447119351,
+        5: 12.050053853763266,
+        10: 6.69894791203551,
+    }
+    for eps, sigma in table.items():
+        assert A.noise_multiplier_for_epsilon(eps, 160, 1.0, DELTA) == pytest.approx(
+            sigma, rel=1e-12
+        )
 
 
 def test_dpconfig_from_run_config():

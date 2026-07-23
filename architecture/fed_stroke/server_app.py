@@ -13,6 +13,7 @@ from flwr.serverapp import Grid, ServerApp
 from flwr.serverapp.strategy import FedXgbBagging
 
 from fed_stroke.dp import DPBooster, DPConfig
+from fed_stroke.dp import ledger as dp_ledger
 from fed_stroke.metrics import (
     nest_site_metrics,
     render_run_report,
@@ -232,14 +233,33 @@ def main(grid: Grid, context: Context) -> None:
         # the real-Geneva ε sweep is 1.1.b behind the independent DP-accountant review.
         dp_bst = DPBooster.from_json_bytes(bytes(result.arrays["0"].numpy().tobytes()))
         m = dp_bst.meta or {}
-        log(
-            INFO,
-            "DP run (synthetic/example data — NOT a real-ε claim): mechanism=%s "
-            "reported_epsilon=%s noise_multiplier=%s num_releases=%s (=2·D·per_site) "
-            "per_site_trees=%s delta=%s",
-            dp.mechanism, m.get("reported_epsilon"), m.get("noise_multiplier"),
-            m.get("num_releases"), m.get("per_site_trees"), dp.delta,
-        )
+        if dp.mechanism == "identity":
+            # R9 comparator arm B: the DP learner with noise OFF — a utility reference inside
+            # the trust boundary, NOT a DP release. No ε is spent; nothing enters the ledger.
+            log(
+                INFO,
+                "DP-learner run, IDENTITY mechanism (R9 comparator arm B): no noise added, "
+                "no ε spent, not a DP release. num_releases=%s",
+                m.get("num_releases"),
+            )
+        else:
+            log(
+                INFO,
+                "DP run (synthetic/example data — NOT a real-ε claim): mechanism=%s "
+                "reported_epsilon=%s noise_multiplier=%s num_releases=%s (=2·D·per_site) "
+                "per_site_trees=%s delta=%s",
+                dp.mechanism, m.get("reported_epsilon"), m.get("noise_multiplier"),
+                m.get("num_releases"), m.get("per_site_trees"), dp.delta,
+            )
+            # R6 reporting rule: every artifact reporting a per-run ε also states the composed
+            # ledger-total ε to date. The ledger is site-local; in the loopback deployment (and
+            # any Geneva-operated aggregator sharing the sites' filesystem) it is readable here.
+            totals = dp_ledger.ledger_total(
+                context.run_config.get("dp.ledger-path", "out/dp_ledger.jsonl"), dp.delta
+            )
+            if totals:
+                log(INFO, "Composed ledger-total ε to date (R6, per site, δ=%s): %s",
+                    dp.delta, totals)
 
     if context.run_config["save-model"]:
         # Rebuild the final global booster from the aggregated arrays.

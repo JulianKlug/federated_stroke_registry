@@ -17,9 +17,9 @@ import math
 import numpy as np
 import pytest
 import xgboost as xgb
-from flwr.app import ArrayRecord, Message, MetricRecord, RecordDict
+from flwr.app import ArrayRecord, ConfigRecord, Message, MetricRecord, RecordDict
 
-from fed_stroke.client_app import _dp_train_round, _site_hash
+from fed_stroke.client_app import _dp_train_round
 from fed_stroke.dp import (
     DP_MODEL_FORMAT,
     BoostParams,
@@ -139,32 +139,93 @@ def test_two_boostparams_grows_local_epochs_at_run_level_sigma():
     assert len(sigmas) == 1            # one run-level σ across all rounds
 
 
-# --- Case 4: cross-round + cross-site noise independence (pins §3.5 + rng threading)
+# --- Case 4: noise entropy (R2) — injected-rng reproducibility, independence, OS entropy
 
-def test_noise_independent_across_rounds_and_sites_and_reproducible():
+def test_noise_reproducible_only_under_injected_rng_and_fresh_in_production():
+    """R2 (reviewer A, finding 1): production noise draws OS entropy — reproducibility exists
+    ONLY under an explicitly injected rng; two production-mode runs on identical data must
+    produce DIFFERENT serialized models (same reported ε). Independence across rounds/sites is
+    a property of distinct rng streams, not of any public seed derivation."""
     X, y = _data()
     dp = DPConfig(enabled=True, target_epsilon=30.0, delta=DELTA)
     kw = dict(local_epochs=1, train_method="bagging", total_trees=40, num_sites=2, X=X, y=y)
 
     # A round-2 global model to continue from (same for every continuation below).
-    g = _dp_train_round(_params(), dp, 1, 1, "bagging", 40, 2, X, y, None, site="node_A")
+    g = _dp_train_round(_params(), dp, 1, 1, "bagging", 40, 2, X, y, None,
+                        site="node_A", rng=np.random.default_rng(7))
     gb = DPBooster(list(g.trees), g.base_margin, g.edges, g.max_bins,
                    feature_ranges=g.feature_ranges, meta=g.meta).to_json_bytes()
 
-    r2_A = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_A", **kw)
-    r3_A = _dp_train_round(_params(), dp, 3, global_model_bytes=gb, site="node_A", **kw)
-    r2_B = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_B", **kw)
-    r2_A_again = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_A", **kw)
+    # (a) reproducibility ONLY under an injected rng: identical generators -> identical models.
+    inj_1 = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_A",
+                            rng=np.random.default_rng(11), **kw)
+    inj_2 = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_A",
+                            rng=np.random.default_rng(11), **kw)
+    assert inj_1.trees == inj_2.trees
 
-    # Consecutive rounds draw DIFFERENT noise (would be identical if rng didn't reach _grow_trees).
-    assert r2_A.trees != r3_A.trees
-    # Distinct sites in the SAME round draw DIFFERENT noise.
-    assert r2_A.trees != r2_B.trees
-    # Fully reproducible from the same public (base_seed, round, site) SeedSequence inputs.
-    assert r2_A.trees == r2_A_again.trees
-    # The seed derives only from public metadata.
-    assert _site_hash("node_A") != _site_hash("node_B")
-    assert _site_hash("node_A") == _site_hash("node_A")
+    # (b) independence: DISTINCT injected rngs (the per-round/per-site streams) -> different noise.
+    other_round = _dp_train_round(_params(), dp, 3, global_model_bytes=gb, site="node_A",
+                                  rng=np.random.default_rng(12), **kw)
+    other_site = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_B",
+                                 rng=np.random.default_rng(13), **kw)
+    assert inj_1.trees != other_round.trees
+    assert inj_1.trees != other_site.trees
+
+    # (c) inverse guard: PRODUCTION mode (no injected rng -> OS entropy) — identical data, two
+    # runs, DIFFERENT serialized models; the reported ε is unchanged (accounting is σ/k-only).
+    prod_1 = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_A", **kw)
+    prod_2 = _dp_train_round(_params(), dp, 2, global_model_bytes=gb, site="node_A", **kw)
+    assert prod_1.trees != prod_2.trees
+    assert prod_1.to_json_bytes() != prod_2.to_json_bytes()
+    assert prod_1.meta["reported_epsilon"] == prod_2.meta["reported_epsilon"]
+
+
+def test_no_public_seed_feeds_production_noise():
+    """R2 grep-level audit as a tripwire: no SeedSequence anywhere in client_app; the only rng
+    construction inside _dp_train_round is the no-arg OS-entropy form; the only SEEDED
+    default_rng in the module is the dp.noise-seed insecure-test hatch (fail-closed by
+    DPConfig.from_run_config); train_dp_gbdt's seeded default applies to the non-DP arm only.
+    Known-cleared seeded generators OUTSIDE the noise path (metrics._bootstrap_ci,
+    dp.synthetic) are deliberately not in scope."""
+    import inspect
+    import re
+
+    from fed_stroke import client_app as CA
+
+    module_src = inspect.getsource(CA)
+    assert "SeedSequence" not in module_src
+    assert "_site_hash" not in module_src            # helper deleted with the seeding scheme
+
+    fn_src = inspect.getsource(CA._dp_train_round)
+    assert re.findall(r"default_rng\(([^)]*)\)", fn_src) == [""]
+
+    seeded = [a.strip() for a in re.findall(r"default_rng\(([^)]*)\)", module_src) if a.strip()]
+    assert seeded == ["dp.noise_seed"]
+
+    tg_src = inspect.getsource(B.train_dp_gbdt)
+    assert "SeedSequence" not in tg_src
+    assert re.findall(r"default_rng\(([^)]*)\)", tg_src) == ["None if dp.enabled else boost.seed"]
+
+
+def test_dpconfig_fail_closes_on_noise_seed():
+    """R2 fail-closed: dp.noise-seed + dp.enabled refuses to construct; the dp.insecure-test
+    hatch permits it on synthetic data only and is itself rejected on real-frozen-schema."""
+    with pytest.raises(ValueError, match="noise"):
+        DPConfig.from_run_config({"dp": {"enabled": True, "noise_seed": 123}})
+
+    hatch = {"dp": {"enabled": True, "noise_seed": 123, "insecure_test": True},
+             "data_provenance": "example-halves"}
+    dp = DPConfig.from_run_config(hatch)
+    assert dp.noise_seed == 123 and dp.insecure_test
+
+    real = {"dp": {"enabled": True, "noise_seed": 123, "insecure_test": True},
+            "data_provenance": "real-frozen-schema"}
+    with pytest.raises(ValueError, match="real-frozen-schema"):
+        DPConfig.from_run_config(real)
+
+    # dp disabled -> no DP claim -> the key is inert, not refused.
+    off = DPConfig.from_run_config({"dp": {"enabled": False, "noise_seed": 5}})
+    assert off.enabled is False
 
 
 # --- Case 5: serialization round-trip + non-finite meta + bad bytes ----------
@@ -400,3 +461,139 @@ def test_evaluate_dp_branch_metric_contract():
     metrics["num-examples"] = metrics.pop("n")
     assert REQUIRED_METRIC_KEYS <= set(metrics)
     assert metrics["num-examples"] == len(y)
+
+
+# --- Case 13 (R9): the identity-mechanism comparator arm B --------------------
+
+def test_identity_arm_b_equals_arm_c_with_sigma_zero():
+    """R9: arm B (dp.enabled + mechanism='identity') is produced by the SAME code path as arm C
+    and differs only in the mechanism — identical trees to a Gaussian arm with σ forced to 0.
+    (σ=0 is forced by constructing the mechanism directly: make_mechanism would divide by σ² in
+    the accountant.) Identity spends nothing: 0 releases, ε=∞, per_site_trees None."""
+    X, y = _data(n=400, seed=3)
+    boost = BoostParams(max_depth=3, num_boost_round=8, base_score=0.5, seed=0)
+
+    dp_b = DPConfig(enabled=True, mechanism="identity")
+    mech_b = make_mechanism(dp_b, boost, 2)
+    assert mech_b.num_releases == 0
+    assert math.isinf(mech_b.reported_epsilon)
+    arm_b = train_dp_gbdt(X, y, boost, dp_b, rng=np.random.default_rng(0))
+
+    zero_sigma = B._GaussianMechanism(0.0, 0.0, 0.0, float("inf"),
+                                      num_gaussian_releases(boost))
+    arm_c0 = train_dp_gbdt(X, y, boost, DPConfig(enabled=True), mechanism=zero_sigma,
+                           rng=np.random.default_rng(0))
+    assert arm_b.trees == arm_c0.trees
+    assert np.array_equal(arm_b.predict(X), arm_c0.predict(X))
+
+    assert arm_b.meta["num_releases"] == 0
+    assert arm_b.meta["per_site_trees"] is None
+    assert arm_b.meta["dp"]["mechanism"] == "identity"
+    # ε=∞ scrubs to null on the wire — a reloaded arm B can never masquerade as a finite-ε run.
+    reloaded = DPBooster.from_json_bytes(arm_b.to_json_bytes())
+    assert reloaded.meta["reported_epsilon"] is None
+
+
+def test_identity_arm_b_is_a_different_learner_than_stock_xgb():
+    """R9: arm A (stock xgb.train) and arm B are DIFFERENT learners (quantile-sketch vs fixed
+    32-bin linspace binning) even at matched hyperparameters — A→B is 'learner cost', so B, not
+    A, is the noise-free reference for the B→C privacy-cost headline."""
+    X, y = _data(n=600, seed=4)
+    boost = BoostParams(max_depth=3, num_boost_round=8, base_score=0.5, seed=0)
+    arm_b = train_dp_gbdt(X, y, boost, DPConfig(enabled=True, mechanism="identity"),
+                          rng=np.random.default_rng(0))
+    bst_a = xgb.train(
+        {"objective": "binary:logistic", "eta": 0.1, "max_depth": 3, "min_child_weight": 5,
+         "tree_method": "hist", "subsample": 1.0, "colsample_bytree": 1.0,
+         "base_score": 0.5, "nthread": 1, "seed": 0},
+        xgb.DMatrix(X, label=y), num_boost_round=8,
+    )
+    assert not np.allclose(bst_a.predict(xgb.DMatrix(X)), arm_b.predict(X))
+
+
+# --- Case 14 (R5): release boundary — DP train reply carries the public site weight ---
+
+def test_dp_train_reply_sends_site_weight_not_exact_count(monkeypatch):
+    """R5: in DP mode the train reply's num-examples is the FIXED PUBLIC node_config
+    dp-site-weight (default 1), NEVER the exact training count — under add/remove adjacency
+    even the count is data-dependent and the accountant does not cover it. (The evaluate
+    reply's exact count is declared INSIDE the trust boundary and deliberately unchanged.)"""
+    from types import SimpleNamespace
+
+    from fed_stroke import client_app
+
+    X, y = _data(n=137, seed=6)     # 137 rows: a count that cannot be confused with a weight
+    pids = np.array([f"P{i}" for i in range(len(X))])
+    monkeypatch.setattr(client_app, "load_data_arrays",
+                        lambda ctx: (X, y, X, y, len(X), len(X), pids))
+    msg = Message(content=RecordDict({"config": ConfigRecord({"server-round": 1})}),
+                  dst_node_id=1, message_type="train")
+    run_config = {
+        "local-epochs": 1, "train-method": "bagging", "total-trees": 40, "num-sites": 2,
+        "dp.enabled": True, "dp.target-epsilon": 30.0,
+        "params.max-depth": 4, "params.base-score": 0.5, "params.seed": 0,
+    }
+    context = SimpleNamespace(
+        run_config=run_config,
+        node_config={"data-path": "/data/geneva_half_A.parquet", "dp-site-weight": 1000},
+    )
+    reply = client_app.train(msg, context)
+    mr = next(iter(reply.content.metric_records.values()))
+    assert mr["num-examples"] == 1000
+    assert mr["num-examples"] != len(X)
+
+    # Unconfigured weight degrades to 1 (equal weights) — still never the exact count.
+    context = SimpleNamespace(run_config=run_config,
+                              node_config={"data-path": "/data/geneva_half_A.parquet"})
+    reply = client_app.train(msg, context)
+    mr = next(iter(reply.content.metric_records.values()))
+    assert mr["num-examples"] == 1
+
+
+# --- Case 15 (R6): ledger append gating -------------------------------------
+
+def test_ledger_append_gating_and_content(tmp_path):
+    """R6 harness integration: the site appends its authorized (k, σ, ε) exactly once per run
+    (first round), only for real noise mechanisms on declared real-frozen-schema data."""
+    from types import SimpleNamespace
+
+    from fed_stroke.client_app import _maybe_append_ledger
+    from fed_stroke.dp import ledger as L
+
+    ledger_path = tmp_path / "dp_ledger.jsonl"
+    run_config = {"data-provenance": "real-frozen-schema", "total-trees": 40, "num-sites": 2,
+                  "dp.ledger-path": str(ledger_path)}
+    ctx = SimpleNamespace(run_config=run_config)
+    dp = DPConfig(enabled=True, target_epsilon=30.0, delta=DELTA)
+
+    entry = _maybe_append_ledger(ctx, dp, _params(), 1, "bagging", 1, "node_A")
+    assert entry is not None
+    entries = L.read_entries(ledger_path)
+    assert len(entries) == 1
+    assert entries[0]["site"] == "node_A"
+    assert entries[0]["num_releases"] == 160          # 2·D·per_site = 2·4·20
+    assert entries[0]["epsilon"] == pytest.approx(
+        A.account_run(160, entries[0]["noise_multiplier"], 1.0, DELTA), rel=1e-9
+    )
+
+    # Later rounds of the same run never re-append (intent-to-spend was recorded upfront).
+    assert _maybe_append_ledger(ctx, dp, _params(), 1, "bagging", 2, "node_A") is None
+    # Identity (arm B) spends nothing.
+    dp_id = DPConfig(enabled=True, mechanism="identity")
+    assert _maybe_append_ledger(ctx, dp_id, _params(), 1, "bagging", 1, "node_A") is None
+    # Synthetic/example provenance makes no per-patient claim -> never ledgered.
+    ctx_syn = SimpleNamespace(run_config={**run_config, "data-provenance": "example-halves"})
+    assert _maybe_append_ledger(ctx_syn, dp, _params(), 1, "bagging", 1, "node_A") is None
+    assert len(L.read_entries(ledger_path)) == 1
+
+
+def test_identity_arm_b_routes_through_dp_train_round():
+    """R9: arm B is reachable in the FEDERATED run path (the DP-learner client route), not only
+    in the demo — _dp_train_round with mechanism='identity' grows trees and stamps the meta."""
+    X, y = _data(n=200, seed=5)
+    dp_b = DPConfig(enabled=True, mechanism="identity")
+    booster = _dp_train_round(_params(), dp_b, 1, 1, "bagging", 40, 2, X, y, None,
+                              site="node_A")
+    assert len(booster.trees) == 1
+    assert booster.meta["dp"]["mechanism"] == "identity"
+    assert booster.meta["num_releases"] == 0

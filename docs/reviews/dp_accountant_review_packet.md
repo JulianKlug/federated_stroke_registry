@@ -1,5 +1,16 @@
 # DP accountant — independent review packet
 
+> **Revision (2026-07-23, post 1.1.a″ remediation).** The first review round (reviewer A: BLOCK;
+> reviewer B: approve with conditions — see
+> [`dp_accountant_review_joint_summary.md`](dp_accountant_review_joint_summary.md)) confirmed the
+> accounting math and blocked on six mechanism/pipeline findings. All are now remediated per
+> [`docs/specs/1_1_a_doubleprime_dp_remediation.md`](../specs/1_1_a_doubleprime_dp_remediation.md):
+> R1 empty-node query (Claim 8 premise), R2 fresh noise entropy, R3 one-row-per-patient (Claim 9
+> now ENFORCED), R4 adjacency-stable keyed-hash split, R5 release boundary, R6 cross-run ledger,
+> R7 fail-closed precondition gate, R9 identity comparator arm. This revision refreshes the code
+> references and §7; **§2's math is unchanged — both reviewers confirmed it and
+> `accounting.py` is frozen.** Re-review by BOTH reviewers is the 1.1.b exit gate.
+
 **Purpose.** This packet is the briefing for the **blocking GATE on roadmap 1.1.b**: an independent
 DP/privacy review of the ε-accountant *before it reports ε as a claim about real Geneva patients*.
 It is self-contained — a reviewer should be able to check every load-bearing claim from the math
@@ -16,7 +27,14 @@ here plus a targeted look at the cited code, without reading the whole spec.
 - **Reference spec:** [`docs/specs/1_1_prereq_dp_plugpoint.md`](../specs/1_1_prereq_dp_plugpoint.md)
   (§3 = "framework/DP facts that drive the design"; the section tags below point into it).
 - **Code under review:** [`architecture/fed_stroke/dp/accounting.py`](../../architecture/fed_stroke/dp/accounting.py)
-  and [`architecture/fed_stroke/dp/boost.py`](../../architecture/fed_stroke/dp/boost.py).
+  and [`architecture/fed_stroke/dp/boost.py`](../../architecture/fed_stroke/dp/boost.py). The
+  1.1.a″ remediation adds the pipeline around them to the re-review scope:
+  [`fed_stroke/task.py`](../../architecture/fed_stroke/task.py) (per-patient dedup + keyed-hash
+  split), [`fed_stroke/dp/preconditions.py`](../../architecture/fed_stroke/dp/preconditions.py)
+  (fail-closed gate), [`fed_stroke/dp/ledger.py`](../../architecture/fed_stroke/dp/ledger.py)
+  (cross-run composition), and the DP branch of
+  [`fed_stroke/client_app.py`](../../architecture/fed_stroke/client_app.py) (OS-entropy noise,
+  release boundary).
 
 ---
 
@@ -54,9 +72,16 @@ Across `d` features **concatenated** (one bin touched per feature): **L2** `= �
 (unlike DP-SGD) because the objective already bounds `g, h`.
 
 - Code: constants `G_L2_PER_FEATURE=1.0`, `H_L2_PER_FEATURE=0.25`, `G_L1_PER_FEATURE=1.0`,
-  `H_L1_PER_FEATURE=0.25` — `boost.py:38-41`.
-- Test: `test_histogram_sensitivity_bound` (N vs N+1 rows → exactly one bin/feature changes,
-  `|ΔG|≤1`, `|ΔH|≤0.25`) — `tests/dp/test_boost.py:58`; `test_gradient_hessian_bounds:47`. (§3.2)
+  `H_L1_PER_FEATURE=0.25` — `boost.py:44-47`.
+- Test: `test_histogram_sensitivity_bound` (N vs N+1 rows → exactly one bin/feature changes for
+  **both** G and H, with the per-bin ΔH pinned, not just the summed delta — the H-side
+  single-bin assertion added per reviewer B F6) — `tests/dp/test_boost.py:58`;
+  `test_gradient_hessian_bounds:47`. (§3.2)
+- **Adjacency unit note (R3/R4):** these are per-**patient** bounds only because the pipeline
+  now enforces one admission row per patient before any split
+  (`task.py:dedup_one_row_per_patient`, asserted again by the R7 gate) and assigns split
+  membership by a keyed hash of `patient_id` alone (`task.py:_hash_split_assign`), so
+  neighbouring raw datasets yield training tables differing by exactly one row. See Claim 9.
 
 ### Claim 2 — composition is PER TREE LEVEL, not per node
 A record flows to exactly one node per depth level; sibling nodes at a level **partition** the
@@ -70,8 +95,8 @@ num_histogram_queries = D × T            # split-finding LEVELS, NOT (2^D − 1
 Counting nodes (`2^D−1 = 15` at `D=4`) instead of levels (`D=4`) would over-charge by
 `(2^D−1)/D ≈ 3.75×` (safe direction, but wrong).
 
-- Code: `num_histogram_queries = max_depth * num_boost_round` — `boost.py:114-116`.
-- Test: `test_num_queries_is_depth_times_rounds` — `tests/dp/test_boost.py:91`. (§3.3)
+- Code: `num_histogram_queries = max_depth * num_boost_round` — `boost.py:150-153`.
+- Test: `test_num_queries_is_depth_times_rounds` — `tests/dp/test_boost.py:97`. (§3.3)
 
 ### Claim 3 — each level is TWO Gaussian releases (G and H) → `2·D·T` (highest-risk item)
 Each level noises the **gradient AND the hessian** histogram, as **two independent Gaussian
@@ -91,9 +116,9 @@ combined squared-Mahalanobis shift is
 **This is the single subtlest ε trap, and the Opacus equivalence gate is BLIND to it** (§5): the gate
 validates ε *given* a release count; it cannot see that the mechanism issues `2·D·T`, not `D·T`.
 
-- Code: `num_gaussian_releases = 2 * num_histogram_queries` — `boost.py:119-122`; the factory feeds
-  `n_rel = num_gaussian_releases(boost)` to the accountant — `boost.py:217, 224`.
-- Tests: `test_gaussian_releases_is_two_times_levels:96`; `test_gaussian_epsilon_uses_release_count:102`
+- Code: `num_gaussian_releases = 2 * num_histogram_queries` — `boost.py:155-158`; the factory feeds
+  `n_rel = num_gaussian_releases(boost)` to the accountant — `boost.py:258, 262`.
+- Tests: `test_gaussian_releases_is_two_times_levels:102`; `test_gaussian_epsilon_uses_release_count:108`
   (asserts the reported ε equals `account_run(2·D·T, σ, …)`, not the `D·T` value). (§3.2/§3.3)
 
 ### Claim 4 — Gaussian noise calibration realizes multiplier `σ`
@@ -106,7 +131,13 @@ For the concatenated `d`-feature `G` release (L2 sensitivity `√d·1.0`), addin
 Same for `H`. Independent per-sibling noise at these scales is the correct realization of the
 per-level parallel composition in Claim 2 (a record perturbs one sibling only).
 
-- Code: `std_g/std_h` — `boost.py:222-223`; `_GaussianMechanism.add_noise` — `boost.py:~180`.
+- Code: `std_g/std_h` — `boost.py:263-264`; `_GaussianMechanism.add_noise` — `boost.py:217`.
+- **Entropy note (R2, reviewer A finding 1):** the noise rng is FRESH OS ENTROPY in production
+  (`client_app.py:_dp_train_round`, `boost.py:train_dp_gbdt`); no experiment seed, round number,
+  or site identifier enters the noise stream (the earlier public-seed derivation made
+  neighbouring datasets distinguishable with probability 1 at any ε). Deterministic noise is
+  injection-only (tests), and a `dp.noise-seed` config key fail-closes for real-data runs —
+  matching Opacus's secure mode, which likewise prohibits user-supplied seeds.
 
 ### Claim 5 — RDP composition + the improved Balle RDP→(ε,δ) conversion
 Composition of `k = 2·D·T` identical Gaussian releases (linear RDP space):
@@ -122,8 +153,8 @@ The classic Mironov conversion is looser and would give a systematic offset; the
 Opacus's exactly (note the integer run starts at **12**, not 11 — 11 is absent).
 
 - Code: `rdp_to_epsilon` (`eps = rdp − (log δ + log α)/(α−1) + log((α−1)/α)`, `np.nanargmin`, no
-  negative clamp) — `accounting.py:158-184`; `DEFAULT_ORDERS` — `accounting.py:37`;
-  `rdp_gaussian` q==1 closed form `α/(2σ²)` — `accounting.py:110`; `account_run` — `accounting.py:186`.
+  negative clamp) — `accounting.py:158-183`; `DEFAULT_ORDERS` — `accounting.py:37`;
+  `rdp_gaussian` q==1 closed form `α/(2σ²)` — `accounting.py:123-139`; `account_run` — `accounting.py:186`.
 - Tests (the **Opacus equivalence gate**): `test_default_orders_match_opacus:22`,
   `test_epsilon_matches_opacus_q1:31` (rel=1e-6 across σ×steps), `test_rdp_gaussian_closed_form:77`,
   `test_account_run_monotone_in_sigma_and_k:84`, and the inverse round-trip
@@ -136,7 +167,7 @@ at `q=1.0`; the reported ε is a clean `k`-fold Gaussian composition and an **ho
 `q<1` subsampled path exists behind `sample_rate` but is used only conservatively (see §6), never to
 claim credit.
 
-- Code: `rdp_gaussian(..., sample_rate=1.0)` default; the factory passes `1.0` — `boost.py:219`.
+- Code: `rdp_gaussian(..., sample_rate=1.0)` default; the factory passes `1.0` — `boost.py:262, 265`.
 - Test (conservative direction only for q<1): `test_epsilon_conservative_when_subsampled:45`. (§3.5)
 
 ### Claim 7 — Laplace arm calibrates to L1 (`∝ d`), not L2 (`∝ √d`)
@@ -146,9 +177,9 @@ evenly. Per-feature scales: `b_G = 2·D·T · d · G_L1 / ε`, `b_H = 2·D·T ·
 the sum over the two homogeneous groups (each `k = D·T`):
 `ε = k·(d·G_L1)/b_G + k·(d·H_L1)/b_H`. Using `√d` here (an L2 factor) would **understate** ε.
 
-- Code: laplace branch of `make_mechanism` — `boost.py:227-235` (uses `d * *_L1_PER_FEATURE`);
+- Code: laplace branch of `make_mechanism` — `boost.py:268-276` (uses `d * *_L1_PER_FEATURE`);
   `account_run_laplace = num_queries · l1_sensitivity / laplace_scale` — `accounting.py:229`.
-- Test: `test_laplace_scale_uses_l1_not_l2` (d=2→d=4 scale ratio is 2, not √2) — `tests/dp/test_boost.py:115`.
+- Test: `test_laplace_scale_uses_l1_not_l2` (d=2→d=4 scale ratio is 2, not √2) — `tests/dp/test_boost.py:121`.
   (§3.2, §8.6)
 
 ### Claim 8 — leaf clipping is POST-PROCESSING (zero ε; `clip_bound` is not a privacy knob)
@@ -159,15 +190,40 @@ is **invariant to `clip_bound`**. (`D(h) = max(h+λ, DENOM_FLOOR)` floors the de
 cannot divide by ≤0 or flip the gain sign; `min_child_weight` is applied on the *noised* hessian, so
 that constraint is probabilistic under noise — documented, not a privacy claim.)
 
-- Code: `_leaf_weight` — `boost.py:250`; `_best_split` floored denom — `boost.py:257`;
-  `DENOM_FLOOR` — `boost.py:42`.
-- Tests: `test_epsilon_independent_of_clip_bound:126`; `test_negative_noised_hessian_is_floored:139`.
+**Premise now HOLDS via R1 (reviewer B F4).** The first review found the premise broken: an
+empty node early-exited to a leaf *without issuing the noised query*, so whether a query was
+issued at all depended on the raw partition — a gap no (ε, δ=1e-5) covers. The guard is now
+depth-only: every node at depth < D issues its histogram query (empty rows → all-zero bincount
+→ the release is pure noise), `2·D·T` already charges for it, and everything downstream
+genuinely is post-processing.
+
+- Code: `_leaf_weight` — `boost.py:293`; `_best_split` floored denom — `boost.py:300`;
+  `DENOM_FLOOR` — `boost.py:48`; the depth-only guard — `boost.py:_grow_trees.build`.
+- Tests: `test_epsilon_independent_of_clip_bound:132`; `test_negative_noised_hessian_is_floored:145`;
+  `test_empty_node_still_issues_histogram_query` (R1 regression: 2^D−1 queries even on an
+  all-empty frontier); `test_sigma_table_reproduced_unchanged` (σ table byte-identical post-fix).
   (§3.8)
 
-### Claim 9 — reported ε is PER-SITE = the per-patient guarantee
+### Claim 9 — reported ε is PER-SITE, PER-PATIENT — now ENFORCED, not assumed (R3)
 Each patient's records live at exactly one site and are touched only by that site's histograms, so
 the single-site ε **is** the guarantee an individual patient receives; there is no cross-site
 composition to add. (§3.9)
+
+**Re-statement (reviewer A finding 3).** The first review falsified this claim as previously
+written: training used **all admission rows**, so a patient with m admissions contributed m
+histogram rows (`ΔG = m`, up to m = 6 in the Geneva registry) while the accountant assumed
+`ΔG = 1`. The one-record-per-patient premise is now **enforced**, twice:
+1. `task.py:generate_splits` dedups to one admission row per patient (max-outcome rule +
+   lexicographic tie-break) before ANY split, for the DP and non-DP arms alike;
+2. the R7 gate (`preconditions.py`) refuses any DP round whose training rows are not
+   one-per-patient (catches any future load path that bypasses `generate_splits`).
+
+The split itself is adjacency-stable (R4, reviewer A finding 2): membership is a keyed hash of
+`patient_id` alone, so adding/removing one patient never moves another — neighbouring raw
+datasets yield training tables differing by exactly one row, and the sensitivity argument
+attaches to the actual pipeline. **Cross-site patient disjointness remains a stated assumption**
+(§7, with a v1.3 follow-up) — directly verifiable in the Geneva-only 2-node phase, load-bearing
+only once Shenzhen joins.
 
 ---
 
@@ -181,13 +237,14 @@ Opacus `get_noise_multiplier` / `RDPAccountant`:
 
 | target ε | k (releases) | σ (our `noise_multiplier_for_epsilon`) |
 |---|---|---|
-| 1  | 160 | ≈ 51 |
-| 3  | 160 | ≈ 19 |
-| 5  | 160 | ≈ 12 |
-| 10 | 160 | ≈ 6.6 |
+| 1  | 160 | 51.17 |
+| 3  | 160 | 18.89 |
+| 5  | 160 | 12.05 |
+| 10 | 160 | 6.70 |
 
-(Exact values reproducible via `noise_multiplier_for_epsilon(ε, 160, 1.0, 1e-5)`; the demo prints the
-`k=120` variants.)
+(Exact values reproducible via `noise_multiplier_for_epsilon(ε, 160, 1.0, 1e-5)`; pinned to full
+float precision by `test_sigma_table_reproduced_unchanged` — the 1.1.a″ remediation left them
+byte-identical, as both reviewers' sign-off requires. The demo prints the `k=120` variants.)
 
 **Independent cross-check recipe (Opacus, k=160, q=1):**
 ```python
@@ -251,19 +308,62 @@ sensitivity roots), not as an all-clear.
 
 ---
 
-## 7. Assumptions & limitations the sign-off is conditioned on
+## 7. Assumptions, enforcement, and the release boundary the sign-off is conditioned on
 
-1. **Add/remove-one-record adjacency**, unbounded DP.
-2. **q = 1.0** (no subsampling amplification); `subsample` is forced to 1.0 in DP mode.
-3. **δ = 1e-5** default (pilot). The reported ε is an **upper bound**.
-4. **Fixed, data-independent bin edges** over public clinical ranges (Age 0–120, NIHSS 0–42). On real
-   Geneva, private-quantile (or public-reference-grid) edges are a **downstream prerequisite before
-   1.1.b runs DP on real data** — data-dependent quantile edges are NOT DP.
-5. **`min_child_weight` under noise is probabilistic** (applied on the noised hessian).
-6. **Gaussian is the RDP-accounted primary; Laplace is a secondary basic-composition sanity path**,
-   not cross-checked against a reference accountant.
-7. The prototype is **single-site synthetic**; this review certifies the **accountant math** that
-   will carry to real data, not the FL wiring (unbuilt).
+### 7.1 Assumption table (post-1.1.a″: enforced vs assumed)
+
+| # | Item | Status | Where |
+|---|---|---|---|
+| 1 | Add/remove-one-**patient** adjacency, unbounded DP | assumption (defines the claim) | §1 |
+| 2 | One admission row per patient (`ΔG=1` per patient) | **ENFORCED** (R3) | `task.py` dedup + R7 gate |
+| 3 | Adjacency-stable split (one patient moves ⇒ one row moves) | **ENFORCED** (R4) | `task.py:_hash_split_assign`; DP mode refuses predefined pid lists |
+| 4 | q = 1.0, no subsampling amplification | **ENFORCED** | DP learner never subsamples; factory accounts at q=1.0 |
+| 5 | δ = 1e-5 (pilot); reported ε is an upper bound | assumption | config |
+| 6 | Fixed, data-independent bin edges over PUBLIC clinical ranges (Age 0–120, NIHSS 0–42) | **ENFORCED** (asserted, not assumed) | R7 gate: `bin_strategy == fixed_range`, finite public ranges |
+| 7 | `base_score` explicitly configured (never auto-derived from the label mean — prevalence leak) | **ENFORCED** (R7) | gate refuses a missing `params.base-score`; pyproject sets 0.5 |
+| 8 | Fresh secret noise entropy; no seeded DP noise on real data | **ENFORCED** (R2) | OS-entropy rng; `dp.noise-seed` fail-closes; Opacus secure-mode precedent |
+| 9 | Authorized round count (no releases beyond the T_site σ was calibrated for) | **ENFORCED** (R7) | gate refuses `global_round > num_rounds` |
+| 10 | Cross-run composition over the same patients (the ε sweep) | **ENFORCED** (R6) | append-only per-site ledger + `ledger_total()`; every per-run ε reported with the composed total |
+| 11 | **Cross-site patient disjointness** (per-site ε = per-patient ε, Claim 9) | **stated assumption** | directly verifiable in the Geneva-only 2-node phase (both halves are held); load-bearing once Shenzhen joins — v1.3 follow-up: privacy-preserving overlap check or composed-budget fallback |
+| 12 | `min_child_weight` under noise is probabilistic (noised hessian) | documented behaviour | Claim 8 |
+| 13 | Laplace arm is a secondary basic-composition path, not reference-cross-checked | assumption | Claim 7 |
+| 14 | Missing features encoded as a PUBLIC sentinel in a reserved bin 0 (`REMOVE-IF-NO-DP`), identically for ALL comparator arms | **ENFORCED** (loader + `fixed_bin_edges`) | a record still lands in exactly one bin per feature, so sensitivities and the release count are untouched; the pre-remediation behaviour silently binned NaN into the TOP bin. Model format bumped to `dp-gbdt-v2` so pre-remediation artifacts fail loudly |
+
+### 7.2 Release boundary (R5 — two tiers, matching the pilot's trust model)
+
+```
+┌────────────────────────── trusted federation boundary ──────────────────────────┐
+│  site node_A ── mTLS ──┐                                                        │
+│  site node_B ── mTLS ──┴─→ Geneva-operated aggregator (arch §6.1)               │
+│                                                                                 │
+│  INSIDE (never published, never exported, steering only):                       │
+│   • validation metrics + confusion matrices (@evaluate replies)                 │
+│   • the evaluate reply's exact num-examples (validation row count)              │
+│   • arm B (identity) utility references — no ε spent, not a DP release          │
+│   • the per-site ledger files                                                   │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       │  CROSSES the boundary (published):
+                                       ▼
+        • the selected model (DP-accounted: per-run ε + composed ledger-total ε)
+        • figures derived from that model (post-processing)
+```
+
+- **`num-examples` in the DP train reply** is a fixed PUBLIC per-site constant
+  (`dp-site-weight`, approximate cohort size rounded to hundreds) — the exact training count is
+  data-dependent under add/remove adjacency and is never sent.
+- **Validation patients:** validation data steers experiments inside the boundary; the DP
+  guarantee claimed publicly covers training patients' contribution to the released model, and
+  validation patients' exposure is confined to the trusted boundary.
+- **Rule (logbook):** nothing inside-boundary appears in any artifact that leaves the project.
+  Any per-site metric that must eventually be published is either computed on data this packet
+  declares non-protected, or privatized under an explicitly accounted extra budget (deferred
+  until actually needed — earliest v1.3 headline).
+
+### 7.3 Scope
+
+The mechanism runs in the federated 2-node topology; the 1.1.b determination is made
+**Geneva-only** (both nodes are Geneva halves — assumption 11 directly verifiable) before
+Shenzhen joins the network.
 
 ---
 

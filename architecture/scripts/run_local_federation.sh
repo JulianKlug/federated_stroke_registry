@@ -93,6 +93,9 @@ for name, node in nodes.items():
     print(f'NODE_{name}_DATA="{data}"')
     print(f'NODE_{name}_APPIO="{node["appio"]}"')
     print(f'NODE_{name}_KEY="{node["key"]}"')
+    # dp-site-weight (spec 1.1.a″ R5): fixed public per-site weight the DP train reply
+    # sends instead of the exact training count. Optional; client defaults to 1.
+    print(f'NODE_{name}_DPWEIGHT="{node.get("dp-site-weight", 1)}"')
 PY
 )"
 }
@@ -231,14 +234,14 @@ start() {
 
     local n dvar avar kvar pid
     for n in ${NODES}; do
-        dvar="NODE_${n}_DATA"; avar="NODE_${n}_APPIO"; kvar="NODE_${n}_KEY"
+        dvar="NODE_${n}_DATA"; avar="NODE_${n}_APPIO"; kvar="NODE_${n}_KEY"; wvar="NODE_${n}_DPWEIGHT"
         echo "Starting SuperNode ${n} ($(basename "${!dvar}")) → logs ${RUN_DIR}/supernode_${n}.log"
         setsid "${VENV_PY}/flower-supernode" \
             --root-certificates "${SECRETS_DIR}/ca.crt" \
             --superlink "${SL_FLEET}" \
             --auth-supernode-private-key "${SECRETS_DIR}/${!kvar}" \
             --clientappio-api-address "${!avar}" \
-            --node-config "data-path=\"${!dvar}\"" \
+            --node-config "data-path=\"${!dvar}\" dp-site-weight=${!wvar}" \
             > "${RUN_DIR}/supernode_${n}.log" 2>&1 &
         pid=$!
         echo "supernode_${n} ${pid}" >> "${PID_FILE}"

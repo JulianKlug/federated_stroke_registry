@@ -121,7 +121,9 @@ def main() -> None:
     booster_b = train_dp_gbdt(X_tr, y_tr, boost, DPConfig(enabled=False))
     print(_row("B numpy-nonoise", None, None, levels, releases, score(booster_b.predict(X_va))))
 
-    # Arm C — our learner, DP ON at each ε.
+    # Arm C — our learner, DP ON at each ε. The injected rng makes this demo REPRODUCIBLE and
+    # therefore an INSECURE-TEST path (R2): production DP runs never seed noise (OS entropy);
+    # deterministic noise is injection-only. Synthetic data only — never point this at real data.
     for eps in args.epsilons:
         dp = DPConfig(enabled=True, mechanism=args.mechanism, target_epsilon=float(eps),
                       clip_bound=args.clip_bound, max_bins=args.max_bins)

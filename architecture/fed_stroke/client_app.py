@@ -1,6 +1,6 @@
 """fed_stroke: ClientApp — local training and evaluation on each SuperNode."""
 
-import hashlib
+import dataclasses
 import warnings
 from logging import WARNING
 from pathlib import Path
@@ -27,7 +27,9 @@ from fed_stroke.dp import (
     dp_local_boost,
     make_mechanism,
     per_site_tree_budget,
+    validate_dp_preconditions,
 )
+from fed_stroke.dp import ledger as dp_ledger
 from fed_stroke.metrics import compute_binary_metrics
 # derive_num_rounds lives in server_app (torch-free flwr symbols only); the client imports it so
 # client and server agree on the round count without duplicating the rule (same as hpo.py:20; the
@@ -96,14 +98,23 @@ def _train_round(
     return _local_boost(bst, num_local_round, train_dmatrix, train_method)
 
 
-def _site_hash(site: str) -> int:
-    """Stable non-negative int from the PUBLIC site name (never data), for the per-site noise
-    stream (§3.5). Public metadata only — this is the sole per-site entropy in the RNG seed."""
-    return int.from_bytes(hashlib.sha1(site.encode()).digest()[:4], "big")
+def _run_calibration(params, dp, local_epochs, train_method, total_trees, num_sites,
+                     num_features):
+    """ONE derivation of (num_rounds, per_site, run-calibrated mechanism) for the whole run —
+    shared by the precondition gate (R7), the ledger append (R6), and the training round
+    itself, so the σ the gate validates and the ledger records is BY CONSTRUCTION the σ the
+    round trains with. The TWO-BoostParams rule (§4.3): σ calibrates on per_site (the busiest
+    site's full-run tree budget), never on this round's growth count."""
+    num_rounds = derive_num_rounds(train_method, total_trees, num_sites, local_epochs)
+    per_site = per_site_tree_budget(train_method, num_rounds, num_sites, local_epochs)
+    acct_boost = BoostParams.from_xgb_params(params, num_boost_round=per_site)
+    mechanism = make_mechanism(dp, acct_boost, num_features)
+    return num_rounds, per_site, mechanism
 
 
 def _dp_train_round(params, dp, global_round, local_epochs, train_method,
-                    total_trees, num_sites, X, y, global_model_bytes, site) -> DPBooster:
+                    total_trees, num_sites, X, y, global_model_bytes, site,
+                    rng=None) -> DPBooster:
     """Pure DP analog of _train_round (no Message/Context, so §4.9 case 3/4 drive it directly).
 
     Returns the reply DPBooster. `global_model_bytes` is the raw bytes of the current global
@@ -111,26 +122,67 @@ def _dp_train_round(params, dp, global_round, local_epochs, train_method,
     §3.7). `local_epochs` is BOTH the growth tree count and dp_local_boost's num_local_round (equal
     by construction). The TWO-BoostParams rule (§4.3): the accounting params carry per_site so σ is
     calibrated once to n_rel = 2·D·T_site; the growth params carry local_epochs (trees grown this
-    round). The rng is seeded from public (base_seed, global_round, site) ONLY and threaded end to
-    end into dp_local_boost -> _grow_trees, so noise is independent per round and per site (§3.5)."""
+    round).
+
+    Noise RNG (R2): production draws FRESH OS ENTROPY every call — no experiment seed, round
+    number, or site identifier may enter the noise stream (the 1.1.a′ scheme that derived the
+    seed from public (base_seed, round, site) made neighbouring datasets distinguishable with
+    probability 1 at the same seed; reviewer A, finding 1). Fresh entropy per call also keeps
+    noise independent across rounds and sites. `rng` is INJECTION-ONLY, for tests that need
+    reproducible noise."""
     assert X.shape[1] == len(FEATURE_RANGES), (
         f"DP noise scale keys off d = len(FEATURE_RANGES) = {len(FEATURE_RANGES)}; got "
         f"X with {X.shape[1]} columns (§3.9 — a frozen-schema growth must fail loud, not "
         f"mis-scale √d noise)."
     )
-    num_rounds = derive_num_rounds(train_method, total_trees, num_sites, local_epochs)
-    per_site = per_site_tree_budget(train_method, num_rounds, num_sites, local_epochs)
-    acct_boost = BoostParams.from_xgb_params(params, num_boost_round=per_site)   # σ calibration
+    _, _, mechanism = _run_calibration(params, dp, local_epochs, train_method,
+                                       total_trees, num_sites, X.shape[1])
     growth = BoostParams.from_xgb_params(params, num_boost_round=local_epochs)   # trees this round
-    mechanism = make_mechanism(dp, acct_boost, X.shape[1])                       # run-calibrated σ
-    rng = np.random.default_rng(
-        np.random.SeedSequence([int(params.get("seed", 0)), int(global_round), _site_hash(site)])
-    )
+    if rng is None:
+        rng = np.random.default_rng()    # OS entropy — the ONLY production noise source (R2)
     global_dp = None if global_round == 1 else DPBooster.from_json_bytes(global_model_bytes)
     booster = dp_local_boost(global_dp, X, y, growth, dp, mechanism, rng,
                              local_epochs, train_method)
     booster.meta["total_trees"] = int(total_trees)   # completes the accounting provenance (§4.1)
     return booster
+
+
+def _maybe_append_ledger(context, dp, params, local_epochs, train_method,
+                         global_round, site):
+    """Append this run's authorized DP spend to the site-local privacy ledger (R6).
+
+    Fires on the site's FIRST train call of the run (global_round == 1): the full authorized
+    (k, σ, ε) is known upfront (σ is run-calibrated), and recording intent-to-spend is
+    conservative in the right direction — a run that crashes later has still spent noise, and
+    waiting for the final round would miss cyclic's non-final site entirely. Only real noise
+    mechanisms on declared real-frozen-schema data are recorded: identity (arm B) spends no ε,
+    and synthetic/example runs make no per-patient claim. Returns the appended entry or None."""
+    if global_round != 1 or dp.mechanism == "identity":
+        return None
+    if context.run_config.get("data-provenance") != "real-frozen-schema":
+        return None
+    total_trees = context.run_config["total-trees"]
+    num_sites = context.run_config["num-sites"]
+    _, _, mechanism = _run_calibration(params, dp, local_epochs, train_method,
+                                       total_trees, num_sites, len(FEATURE_RANGES))
+    run_identity = {
+        "dp": dataclasses.asdict(dp),
+        "params": params,
+        "total_trees": int(total_trees),
+        "num_sites": int(num_sites),
+        "local_epochs": int(local_epochs),
+        "train_method": train_method,
+    }
+    return dp_ledger.append_entry(
+        context.run_config.get("dp.ledger-path", "out/dp_ledger.jsonl"),
+        site=site,
+        mechanism=dp.mechanism,
+        num_releases=mechanism.num_releases,
+        noise_multiplier=mechanism.noise_multiplier,
+        epsilon=mechanism.reported_epsilon,
+        delta=dp.delta,
+        run_config_hash=dp_ledger.config_hash(run_identity),
+    )
 
 
 @app.query()
@@ -163,19 +215,49 @@ def train(msg: Message, context: Context) -> Message:
         if float(params.get("subsample", 1.0)) != 1.0:
             log(WARNING, "DP mode: params.subsample=%s ignored; using q=1.0 for honest "
                 "accounting (the DP learner never subsamples rows).", params.get("subsample"))
-        X_tr, y_tr, _, _, num_train, _ = load_data_arrays(context)
+        # num_train deliberately NOT unpacked here: the exact count must not exist in this
+        # branch at all — the reply weight is the fixed public dp-site-weight (R5, below).
+        X_tr, y_tr, _, _, _, _, train_pids = load_data_arrays(context)
         site = Path(context.node_config["data-path"]).name
+        # R7 fail-closed gate: refuse the round unless every DP precondition holds. The
+        # mechanism validated here is by construction the one the round trains with
+        # (_run_calibration is the single derivation _dp_train_round also uses).
+        num_rounds, _, mechanism = _run_calibration(
+            params, dp, num_local_round, train_method,
+            context.run_config["total-trees"], context.run_config["num-sites"],
+            X_tr.shape[1],
+        )
+        validate_dp_preconditions(
+            X=X_tr, y=y_tr, patient_ids=train_pids, dp=dp, params=params,
+            mechanism=mechanism, global_round=global_round, num_rounds=num_rounds,
+        )
         global_model_bytes = None
         if global_round != 1:
             global_model_bytes = bytes(msg.content["arrays"]["0"].numpy().tobytes())
+        # Deterministic noise is reachable ONLY through the dp.insecure-test hatch, which
+        # DPConfig.from_run_config has already fail-closed against real-frozen-schema data (R2).
+        # Production runs leave rng=None -> _dp_train_round draws fresh OS entropy.
+        rng = None
+        if dp.noise_seed is not None:
+            rng = np.random.default_rng(dp.noise_seed)
+        # R6: record this run's authorized spend in the site-local ledger BEFORE training
+        # (first round only; real-frozen-schema data + real noise mechanism only).
+        _maybe_append_ledger(context, dp, params, num_local_round, train_method,
+                             global_round, site)
         booster = _dp_train_round(
             params, dp, global_round, num_local_round, train_method,
             context.run_config["total-trees"], context.run_config["num-sites"],
-            X_tr, y_tr, global_model_bytes, site,
+            X_tr, y_tr, global_model_bytes, site, rng=rng,
         )
         model_np = np.frombuffer(booster.to_json_bytes(), dtype=np.uint8)
         model_record = ArrayRecord([model_np])
-        metric_record = MetricRecord({"num-examples": num_train})
+        # R5 release boundary: NEVER the exact training count — under add/remove adjacency it
+        # is data-dependent and the accountant does not cover it. Bagging aggregation only
+        # needs RELATIVE weights, so each site sends its fixed PUBLIC configured weight
+        # (node_config dp-site-weight, e.g. approximate cohort size rounded to hundreds;
+        # default 1 = equal weights).
+        site_weight = int(context.node_config.get("dp-site-weight", 1))
+        metric_record = MetricRecord({"num-examples": site_weight})
         content = RecordDict({"arrays": model_record, "metrics": metric_record})
         return Message(content=content, reply_to=msg)
 
@@ -216,7 +298,7 @@ def evaluate(msg: Message, context: Context) -> Message:
     if dp.enabled:
         # DP branch: deserialize a DPBooster and predict on raw X (§4.4). Scoring goes through
         # the UNCHANGED compute_binary_metrics, so the metric contract matches the XGB branch.
-        _, _, X_valid, y_valid, _, num_val = load_data_arrays(context)
+        _, _, X_valid, y_valid, _, num_val, _ = load_data_arrays(context)
         booster = DPBooster.from_json_bytes(bytes(msg.content["arrays"]["0"].numpy().tobytes()))
         y_prob = booster.predict(X_valid)
         y_true = y_valid

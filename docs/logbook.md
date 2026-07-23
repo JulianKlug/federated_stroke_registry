@@ -173,3 +173,108 @@
   `num_releases=160`; V-DP `eval_final_model.py` auto-detects `dp-gbdt-v1` and reproduces the
   federated evaluate AUC to fp identity. Turns 1.1.b into "the 1.1.a sweep + DP arms" with no new
   orchestration.
+
+- 2026-07-22 — 1.1.b gate, review round 1: two independent DP reviews of
+  docs/reviews/dp_accountant_review_packet.md returned (A: BLOCK, system/pipeline level;
+  B: approve-with-conditions, mechanism level; joined in
+  docs/reviews/dp_accountant_review_joint_summary.md). **Accountant math confirmed by both**
+  — sensitivities, 2·D·T count, Gaussian/Laplace calibration, RDP+Balle conversion, σ table
+  (51.17/18.89/12.05/6.70 for ε=1/3/5/10 at k=160, δ=1e-5; B cross-checked installed Opacus
+  1.6.0 to machine precision) — `accounting.py` verified and frozen. **Gate NOT passed:** six
+  blocking findings in the surrounding mechanism/pipeline — un-noised empty-node branch
+  (boost.py:434), deterministic public-seeded DP noise (client_app.py:126-128, a deliberate
+  1.1.a′ design now reversed for production), non-adjacency-stable stratified split (task.py),
+  admission-row (not per-patient) adjacency unit, exact num-examples/validation-metric releases
+  outside the accounting, and missing cross-run sweep composition. Remediation roadmap 1.1.a″
+  written (docs/specs/1_1_a_doubleprime_dp_remediation.md): R1 always-issue empty-node query, R2 OS
+  entropy for DP noise (deterministic RNG injection-only in tests), R3 one-row-per-patient
+  dedup, R4 keyed-hash split, R5 two-tier release boundary + public site weights, R6 append-only
+  RDP run ledger with composed-ε reporting, R7 fail-closed precondition gate (incl. explicit
+  base_score), R8 packet refresh + re-review. Exit = both reviewers sign off; 1.1.b stays
+  blocked for real Geneva data until then. No sign-off recorded.
+
+- 2026-07-22 — R3 dedup rule decided (user): one row per patient via **max-outcome +
+  lexicographic case_admission_id tie-break**, applied at load for the **whole pipeline**
+  (DP and non-DP arms), before the split. Grounding on the real halves: 3674 rows → 3382
+  patients (−7.9%), 243 multi-admission patients, m ≤ 6, only 16 with disagreeing labels
+  (balance 0.0882 → 0.0923). First/index-admission rejected for now — the EDS suffix is not
+  chronological (age monotone in only 56% of multi-admission patients); revisit if the frozen
+  schema includes an admission date. Non-DP baselines must be re-run once on the deduped
+  cohort. Spec updated: docs/specs/1_1_a_doubleprime_dp_remediation.md §R3.
+
+- 2026-07-23 — 1.1.a″ remediation implemented (all code items R1–R7 + R9;
+  docs/specs/1_1_a_doubleprime_dp_remediation.md). R1 depth-only leaf guard — every node at
+  depth < D issues its noised query (empty ⇒ pure-noise release, already charged by 2·D·T). R2
+  DP noise draws OS entropy at both call sites; deterministic rng is injection-only;
+  `dp.noise-seed` fail-closes (insecure-test hatch rejected on real-frozen-schema); `_site_hash`
+  deleted; source-audit tripwire test. R3 one-row-per-patient dedup in `generate_splits`
+  (max-outcome + tie-break), loader assertion + learner-side gate check. R4 stratified
+  `train_test_split` replaced by `HMAC(SPLIT_KEY‖role‖seed, patient_id)` assignment
+  (role ∈ {partition, subsplit} domain-separated; stratification loss accepted symmetrically);
+  DP mode refuses predefined pid lists. R5 DP train reply sends fixed public `dp-site-weight`
+  (node_config; pyproject 1000/1000), never the exact count; evaluate metrics declared
+  inside-boundary. **Boundary rule: nothing inside-boundary appears in any artifact that leaves
+  the project.** R6 `fed_stroke/dp/ledger.py` — per-site append-only jsonl (intent-to-spend on
+  each site's FIRST round of a real-frozen-schema DP run), `ledger_total()` composes per site
+  via the frozen accounting fns (compose-of-N pinned against Opacus); server logs composed
+  total next to per-run ε; reporting template docs/templates/1_1_b_report_skeleton.md. R7
+  `validate_dp_preconditions()` gate in the client DP branch (labels/features finite, one row
+  per patient, per-mechanism budget checks — laplace validated on b_g/b_h not the nan σ —
+  fixed public bins, EXPLICIT `params.base-score` (new pyproject key, also pins the non-DP arm
+  init: deliberate, matches R9 arms), authorized round count). R9 identity mechanism reachable
+  with `dp.enabled` + `dp.mechanism="identity"` = comparator arm B (0 releases, ε=∞→null, never
+  ledgered); arm B == σ→0 arm C pinned; A→B→C decomposition promoted to the 1.1.b template with
+  B→C as the privacy-cost headline (arm A at subsample=colsample=1.0). R8 packet refreshed
+  (line refs, Claim 8 premise via R1, Claim 9 re-stated as enforced, §7 assumption table +
+  boundary diagram, H-side single-bin assertion added to `test_histogram_sensitivity_bound`).
+  **Suite: 233/233 (was 198); σ table byte-identical (test-pinned); non-DP `_train_round`
+  byte-identity hashes untouched.** Rebaseline audit: the spec-predicted test breaks from R3/R4
+  (`test_hpo.py` seed-42 byte-identity, eval/baseline fixtures) did NOT fail — they compare the
+  shared split code to itself and the fixtures are single-admission, so they passed mechanically;
+  the seed-42 test was renamed (`test_resolve_run_split_flat_delegates_to_generate_splits`) to
+  stop claiming a legacy identity that no longer exists. Only intentional behavior rework:
+  test_dp_fl case 4 (entropy). **Still open for 1.1.a″ acceptance:** non-DP arm-A re-run on the
+  deduped halves with the delta logged (real-data step, after sign-off), packet re-issue to
+  BOTH reviewers (A's re-review required — verdict was BLOCK), sign-off recorded here, and only
+  then the Geneva-only federated A→B→C sweep + go/no-go BEFORE Shenzhen integration.
+
+- 2026-07-23 — 1.1.a″ loopback E2E verification (acceptance 2 + fail-closed rails exercised
+  for real). Live TLS 2-node federation: DP gaussian (ε=30) and identity (arm B) runs both
+  complete under **production OS entropy**; server logs the accounting line
+  (`reported_epsilon=29.9999992 σ=0.897 num_releases=16` on the short run) and the arm-B
+  annotation (`IDENTITY mechanism … no ε spent, not a DP release`); no ledger written
+  (provenance=example-halves — correct gating); two unseeded `train_dp_gbdt` runs on identical
+  data produce different serialized models at identical reported ε. **The new rails caught two
+  REAL data defects in the example halves on the first E2E attempt:** (1) half A contains an
+  exactly-duplicated `case_admission_id` (REDACTED, twice, same label) — the R3 loader
+  assertion fail-closed; dedup hardened to stable-sort + head(1) so exact-duplicate ids
+  deterministically reduce to one row (regression test added). (2) Both halves contain missing
+  features (NIH on admission: 84/1845 in A, 72/1829 in B; Age: 1 in B) — the R7 gate refuses
+  them. **Previously the DP learner silently binned NaN into the TOP bin (searchsorted
+  fallthrough → max-NIHSS artifact), so the 1.1.a′ V4/V5 DP numbers quietly trained on that;
+  the non-DP XGBoost arm handles NaN natively, so the arms also diverged on missingness.** E2E
+  was verified on NaN-free copies (dropna; originals restored, sha256-verified). ⇒ **New open
+  decision before any real-data DP run:** a missingness policy for the frozen schema (impute /
+  explicit missing indicator / drop) — applied identically to ALL R9 arms so A→B→C stays
+  unconfounded.
+
+- 2026-07-23 — Missingness policy decided (user) and implemented: **variant 1, sentinel /
+  missing bin, applied at the loader for ALL arms** — flagged `REMOVE-IF-NO-DP` at every touch
+  point (grep token) because it exists ONLY for the DP learner; if the project later moves
+  forward without DP, remove it and let XGBoost's native NaN handling take over. Mechanics:
+  `schema.MISSING_SENTINEL = -1.0` (public); `generate_splits` (the R3 chokepoint, so the
+  pooled baseline and offline scorer inherit it too) fills NaN features with the sentinel;
+  `fixed_bin_edges` reserves **bin 0** structurally (edges = [sentinel, linspace(lo, hi,
+  max_bins)]) so missing/real separation holds exactly at ANY max_bins and FEATURE_RANGES keep
+  their clinical meaning; arm A's XGBoost sees the sentinel as an ordinary splittable value
+  (DMatrix missing stays NaN), so A→B→C shares one encoding. **Zero accounting impact** — a
+  record still lands in exactly one bin per feature; σ table pins unchanged. Cost: max_bins−1
+  real-value bins (32→31 at default). **Model format bumped `dp-gbdt-v1` → `dp-gbdt-v2`**:
+  v1 artifacts' stored (feature_ranges, max_bins) would reconstruct shifted edges under the
+  new function and silently mispredict — the bump makes every pre-remediation artifact (all
+  invalid anyway: public-seeded noise, non-deduped cohort) fail loudly at load; the offline
+  loader now routes any `dp-gbdt-*` prefix to DPBooster so stale files get the clear version
+  error. Suite 235/235. Loopback E2E re-run on the ORIGINAL example halves (NaNs and the
+  duplicate caid included, no preprocessing): non-DP arm A, identity arm B, and gaussian arm C
+  all complete over TLS — acceptance 2 now holds on the untouched example data. Packet §7
+  assumption table gains row 14; the 1.1.b template records the encoding + per-half missing %.

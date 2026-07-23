@@ -58,6 +58,12 @@ metrics-dir = "out/metrics"  # where the per-run site-stratified JSON is written
 n-boot = 1000                # bootstrap resamples for per-metric 95% CIs (§4.1); determinism via boot-seed
 boot-seed = 0                # RNG seed for reproducible bootstrap CIs
 
+# Data provenance of the run (spec 1.1.a″ R2/R6; same vocabulary as run_hpo's --data-provenance:
+# "example-halves" | "real-frozen-schema"). Gates the DP safety rails: the dp.insecure-test
+# noise-seed hatch is REJECTED and the privacy ledger append is REQUIRED when a run declares
+# real-frozen-schema data. Runs on real frozen-schema Geneva data MUST override this.
+data-provenance = "example-halves"
+
 # HPO split protocol (roadmap 1.1.a; docs/specs/1_1_a_hpo_harness.md §4.5/§4.6).
 # All three default to today's FLAT single-split behavior, so an unconfigured run is
 # byte-identical to the pre-1.1.a seed-42 split. The HPO harness overrides them per
@@ -69,6 +75,11 @@ holdout-eval = false  # true only for the winner's hold-out report run: train on
 
 # XGBoost parameters (architecture §3; matched across both strategies)
 params.objective = "binary:logistic"
+# EXPLICIT base_score (spec 1.1.a″ R7): XGBoost >= 2.0 otherwise auto-derives it from the
+# label MEAN, which (a) leaks prevalence outside the DP accounting and (b) un-matches the
+# R9 comparator arms' initialization. DP mode fail-closes if this key is absent. Deliberate
+# side effect: the non-DP arm now also trains from 0.5 instead of the auto-derived mean.
+params.base-score = 0.5
 params.seed = 0 # pinned so the 1.d pooled reference trains deterministically (XGBoost default is already 0, so federated numbers are unchanged)
 params.eta = 0.1 # Learning rate
 params.max-depth = 4
@@ -92,6 +103,11 @@ dp.delta = 1e-5
 dp.clip-bound = 1.0              # geometric leaf clip |w| <= clip_bound (post-processing; ZERO ε effect)
 dp.max-bins = 32
 dp.bin-strategy = "fixed-range"  # "fixed-range" (data-independent, DP-safe) | "quantile" (NON-DP arms only)
+# Append-only cross-run privacy ledger (spec 1.1.a″ R6). Each site appends its authorized
+# (k, σ, ε) on the FIRST train call of every real-data DP run (dp.enabled, mechanism not
+# identity, data-provenance = "real-frozen-schema"); relative path resolves against the
+# SuperNode working directory, so the ledger stays site-local.
+dp.ledger-path = "out/dp_ledger.jsonl"
 
 # Secure-topology values, roadmap 1.e (docs/specs/1e_secure_topology.md §4.5/§4.6).
 # Deliberately NOT [tool.flwr.federations.*]: `flwr run` migrates that legacy block
@@ -106,8 +122,12 @@ fleet-address = "127.0.0.1:9092"  # Fleet API (what SuperNodes pass to --superli
 ca-cert = "architecture/.secrets/ca.crt"  # repo-relative; resolved to absolute at generation time
 
 [tool.fed_stroke.nodes]
-node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", key = "node_A" }
-node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B" }
+# dp-site-weight (spec 1.1.a″ R5): the FIXED PUBLIC per-site aggregation weight the DP train
+# reply sends instead of the exact training count (which is data-dependent under add/remove
+# adjacency and not covered by the accountant). Approximate cohort size rounded to hundreds —
+# bagging only needs relative weights; exactness buys nothing.
+node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", key = "node_A", dp-site-weight = 1000 }
+node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B", dp-site-weight = 1000 }
 
 [dependency-groups]
 # opacus (pulls torch, ~heavy) is the DP-accountant equivalence-gate reference ONLY

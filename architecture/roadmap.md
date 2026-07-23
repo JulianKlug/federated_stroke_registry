@@ -154,6 +154,19 @@ in Phase v1.3.
   patient data (that is gated in 1.1.b), so no real-ε claim is made here. Closes
   the downstream integration item flagged in
   docs/specs/1_1_prereq_dp_plugpoint.md §4.5. Prerequisite for 1.1.b.
+- [ ] 1.1.a″ DP remediation (response to the 1.1.b gate reviews). The
+  independent review ran on 2026-07-22 with two reviewers: verdicts BLOCK
+  (reviewer A, system/pipeline level) and approve-with-conditions (reviewer B,
+  mechanism level). Both independently confirmed the accountant math and the
+  σ table — `fed_stroke/dp/accounting.py` is verified and frozen. Six blocking
+  findings sit in the mechanism/pipeline around it: empty-node un-noised
+  branch (B-F4), deterministic public-seeded DP noise (A-1), non-adjacency-
+  stable train/val split (A-2), admission-rows-not-patients adjacency unit
+  (A-3), un-accounted exact transcript releases (A-4), missing cross-run
+  sweep composition (A-5). Fix roadmap with decisions, ordering (R1–R8), and
+  acceptance: docs/specs/1_1_a_doubleprime_dp_remediation.md. Joint review summary:
+  docs/reviews/dp_accountant_review_joint_summary.md. Exit = packet re-issued
+  and **both** reviewers signed off, recorded in docs/logbook.md.
 - [ ] 1.1.b Run the sweep both without DP and with DP at each pilot
   ε ∈ {1, 3, 5, 10}, δ = 1e-5 (builds on the wired DP path from 1.1.a′). DP
   changes the utility landscape —
@@ -172,6 +185,11 @@ in Phase v1.3.
     the author's blind spots (both errors above were caught only by an
     independent re-derivation at spec stage). Record the sign-off (reviewer,
     date, scope) in `docs/logbook.md`.
+    **Status (2026-07-22): review round 1 complete — gate NOT passed.**
+    Accountant math confirmed by both reviewers; six blocking pipeline/
+    mechanism findings must be remediated (1.1.a″,
+    docs/specs/1_1_a_doubleprime_dp_remediation.md) and the packet re-reviewed
+    before this item runs on real patient data.
 - [ ] 1.1.c Search method matched to compute budget: Optuna / TPE if
   evaluation runs are cheap, coarse grid otherwise. Rényi-DP composition
   accounting across rounds throughout.

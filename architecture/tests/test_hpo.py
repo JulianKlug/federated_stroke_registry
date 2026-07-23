@@ -356,7 +356,11 @@ def test_validate_results_missing_signal_key_raises():
 # --------------------------------------------------------------------------- #
 # §4.5  resolve_run_split  (the split-contract core)
 # --------------------------------------------------------------------------- #
-def test_resolve_run_split_byte_identical_to_legacy_seed42():
+def test_resolve_run_split_flat_delegates_to_generate_splits():
+    """FLAT mode is exactly generate_splits(test_size=0.2, seed=split_seed). Renamed from the
+    pre-1.1.a″ 'byte_identical_to_legacy_seed42' pin: R3/R4 deliberately replaced the split rule
+    (dedup + keyed hash), so 'legacy' identity no longer exists — both sides of this assertion
+    now exercise the SAME new rule, and the test pins the delegation, not the old membership."""
     df = _synthetic_half()
     a_tr, a_va = resolve_run_split(df.copy(), outcome=TARGET_COL,
                                    split_seed=42, holdout_frac=0.0)
@@ -403,6 +407,146 @@ def test_resolve_run_split_holdout_seed_is_fixed_partition_not_search_seed():
                                   holdout_frac=0.2, holdout_eval=True)
     assert _pids(held_a) == _pids(held_b)
     assert HOLDOUT_PARTITION_SEED == 42
+
+
+# --------------------------------------------------------------------------- #
+# 1.1.a″ R3 (one row per patient) + R4 (adjacency-stable keyed-hash split)
+# --------------------------------------------------------------------------- #
+def test_generate_splits_dedups_to_one_row_per_patient_max_outcome():
+    """R3: exactly one admission row per patient; keep a max-outcome admission, tie-break by
+    lexicographically smallest case_admission_id. Idempotent."""
+    df = pd.DataFrame({
+        "case_admission_id": ["P0001_1", "P0001_2",      # labels differ -> keep max-outcome _2
+                              "P0002_2", "P0002_1",      # tie (both 1)  -> keep smaller id _1
+                              "P0003_1",                 # single admission -> kept
+                              "P0004_1", "P0004_1"],     # EXACT duplicate row (registry reality:
+                                                         # one admission recorded twice) -> ONE kept
+        FEATURE_COLS[0]: [50.0, 60.0, 70.0, 71.0, 80.0, 90.0, 90.0],
+        FEATURE_COLS[1]: [5, 6, 7, 8, 9, 10, 10],
+        TARGET_COL: [0, 1, 1, 1, 0, 1, 1],
+    })
+    tr, va, num_train, num_test = generate_splits(df.copy(), TARGET_COL, 0.2, seed=0)
+    kept = pd.concat([tr, va]).sort_values("case_admission_id")
+    assert list(kept["case_admission_id"]) == ["P0001_2", "P0002_1", "P0003_1", "P0004_1"]
+    assert kept["patient_id"].is_unique
+    assert kept.set_index("case_admission_id")[TARGET_COL].to_dict() == {
+        "P0001_2": 1, "P0002_1": 1, "P0003_1": 0, "P0004_1": 1,
+    }
+    assert num_train + num_test == 4
+    # Idempotence: splitting the already-deduped rows again keeps the identical row set.
+    tr2, va2, _, _ = generate_splits(kept.copy(), TARGET_COL, 0.2, seed=0)
+    assert set(pd.concat([tr2, va2])["case_admission_id"]) == set(kept["case_admission_id"])
+
+
+def test_generate_splits_encodes_missing_as_sentinel(tmp_path):
+    """REMOVE-IF-NO-DP (missingness variant 1): NaN features become the public sentinel at the
+    generate_splits chokepoint, for ALL arms alike — so the frames every learner trains on are
+    finite (the R7 gate requires it) and the A→B→C arms share one missingness encoding.
+    Idempotent; labels are untouched; and the encoded frame flows through the loader belt."""
+    from types import SimpleNamespace
+
+    from fed_stroke import task as task_mod
+    from fed_stroke.schema import MISSING_SENTINEL
+
+    df = _synthetic_half(n=60, n_multi=0)
+    df.loc[3, FEATURE_COLS[1]] = np.nan          # missing NIHSS
+    df.loc[7, FEATURE_COLS[0]] = np.nan          # missing age
+    tr, va, _, _ = generate_splits(df.copy(), TARGET_COL, 0.2, seed=0)
+    both = pd.concat([tr, va])
+    assert both[FEATURE_COLS].notna().all().all()               # no NaN survives
+    assert (both[FEATURE_COLS] == MISSING_SENTINEL).sum().sum() == 2
+    enc = both.set_index("case_admission_id")
+    assert enc.loc["P0003_1", FEATURE_COLS[1]] == MISSING_SENTINEL
+    assert enc.loc["P0007_1", FEATURE_COLS[0]] == MISSING_SENTINEL
+    # Idempotence: re-splitting the encoded frame changes nothing.
+    tr2, va2, _, _ = generate_splits(both.copy(), TARGET_COL, 0.2, seed=0)
+    assert (pd.concat([tr2, va2])[FEATURE_COLS] == MISSING_SENTINEL).sum().sum() == 2
+
+    # End-to-end through the SuperNode loader: arrays come back finite (gate-compatible).
+    path = tmp_path / "half_nan.parquet"
+    df.to_parquet(path)
+    ctx = SimpleNamespace(node_config={"data-path": str(path)}, run_config={})
+    train_df, valid_df, _, _, _ = task_mod._resolve_context_split(ctx)
+    assert np.isfinite(train_df[FEATURE_COLS].to_numpy(dtype=float)).all()
+    assert np.isfinite(valid_df[FEATURE_COLS].to_numpy(dtype=float)).all()
+
+
+def test_hash_split_is_adjacency_stable_per_patient():
+    """R4 property test: adding or removing any single patient changes NO other patient's
+    assignment (each pid's side depends only on (pid, role, seed))."""
+    df = _synthetic_half(n=200, n_multi=0)
+
+    def sides(frame, seed):
+        tr, va, _, _ = generate_splits(frame.copy(), TARGET_COL, 0.2, seed=seed)
+        return {**{p: "tr" for p in _pids(tr)}, **{p: "va" for p in _pids(va)}}
+
+    for seed in (0, 1, 7):
+        base = sides(df, seed)
+        for victim in ("P0000", "P0042", "P0199"):
+            removed = df[~df["case_admission_id"].str.startswith(victim + "_")]
+            after = sides(removed, seed)
+            assert after == {p: s for p, s in base.items() if p != victim}
+        added = pd.concat([df, pd.DataFrame({
+            "case_admission_id": ["Q9999_1"], FEATURE_COLS[0]: [55.0],
+            FEATURE_COLS[1]: [12], TARGET_COL: [1],
+        })], ignore_index=True)
+        after = sides(added, seed)
+        assert {p: s for p, s in after.items() if p != "Q9999"} == base
+
+
+def test_hash_split_fraction_within_binomial_tolerance():
+    """R4: the hash split's validation fraction tracks test_size (no stratification — the
+    balance jitter is the accepted cost; this pins that the FRACTION itself is sound)."""
+    df = _synthetic_half(n=2000, n_multi=0)
+    for seed in (0, 3):
+        tr, va, num_train, num_test = generate_splits(df.copy(), TARGET_COL, 0.2, seed=seed)
+        frac = num_test / (num_train + num_test)
+        # 0.2 ± ~4.5σ binomial at n=2000 (σ ≈ 0.0089); deterministic, no flake.
+        assert abs(frac - 0.2) < 0.04
+
+
+def test_hash_split_partition_and_subsplit_roles_do_not_alias():
+    """R4: role domain-separation — at split_seed == HOLDOUT_PARTITION_SEED the DEV sub-split
+    must NOT collapse (same seed, different role -> different key -> non-empty valid band)."""
+    df = _synthetic_half()
+    tr, va = resolve_run_split(df.copy(), TARGET_COL, split_seed=HOLDOUT_PARTITION_SEED,
+                               holdout_frac=0.2, holdout_eval=False)
+    assert len(va) > 0
+    assert len(tr) > 0
+
+
+def test_generate_splits_dp_mode_refuses_predefined_pid_lists(tmp_path):
+    """R4 fail-closed: DP mode refuses any split rule other than the keyed hash — a frozen
+    cohort-derived pid list has no assignment rule for the adjacent dataset's extra patient."""
+    df = _synthetic_half(n=50, n_multi=0)
+    test_pids = tmp_path / "test_pids.csv"
+    train_pids = tmp_path / "train_pids.csv"
+    pd.DataFrame({"patient_id": [f"P{i:04d}" for i in range(10)]}).to_csv(test_pids, index=False)
+    pd.DataFrame({"patient_id": [f"P{i:04d}" for i in range(10, 50)]}).to_csv(train_pids, index=False)
+
+    with pytest.raises(ValueError, match="DP mode"):
+        generate_splits(df.copy(), TARGET_COL, 0.2, seed=0,
+                        test_pids_path=test_pids, train_pids_path=train_pids, dp_mode=True)
+    # Non-DP arms keep the frozen-list mechanism.
+    tr, va, _, _ = generate_splits(df.copy(), TARGET_COL, 0.2, seed=0,
+                                   test_pids_path=test_pids, train_pids_path=train_pids)
+    assert _pids(va) == {f"P{i:04d}" for i in range(10)}
+
+
+def test_context_split_loader_belt_fires_when_dedup_bypassed(tmp_path, monkeypatch):
+    """R3 loader belt: _resolve_context_split refuses any partition with more rows than
+    patients (can only happen if generate_splits' dedup regresses)."""
+    from types import SimpleNamespace
+
+    from fed_stroke import task as task_mod
+
+    df = _synthetic_half()  # has multi-admission patients
+    path = tmp_path / "half.parquet"
+    df.to_parquet(path)
+    monkeypatch.setattr(task_mod, "dedup_one_row_per_patient", lambda data, outcome: data)
+    ctx = SimpleNamespace(node_config={"data-path": str(path)}, run_config={})
+    with pytest.raises(ValueError, match="R3"):
+        task_mod._resolve_context_split(ctx)
 
 
 def test_split_half_reconstructs_the_run_split(tmp_path):

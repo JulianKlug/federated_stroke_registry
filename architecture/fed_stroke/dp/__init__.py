@@ -4,9 +4,10 @@ Re-exports the plug-point SEAM the downstream federated `client_app` DP branch i
 (spec 1.1 §4.5): a single `from fed_stroke.dp import ...` reaches the config, the mechanism
 protocol, the learner, and the DP-safe feature ranges.
 
-Only `accounting` and `boost` are imported here — both torch-free — so `import fed_stroke.dp`
-stays a minimal, torch-free seam (acceptance §7.6). The synthetic generator
-(`fed_stroke.dp.synthetic`) is a dev/test helper and is imported explicitly where needed.
+Only `accounting`, `boost`, and `preconditions` are imported here — all torch-free — so
+`import fed_stroke.dp` stays a minimal, torch-free seam (acceptance §7.6). The synthetic
+generator (`fed_stroke.dp.synthetic`) is a dev/test helper and the run ledger
+(`fed_stroke.dp.ledger`) a harness helper; both are imported explicitly where needed.
 """
 from fed_stroke.dp.boost import (
     DP_MODEL_FORMAT,
@@ -22,6 +23,7 @@ from fed_stroke.dp.boost import (
     per_site_tree_budget,
     train_dp_gbdt,
 )
+from fed_stroke.dp.preconditions import validate_dp_preconditions
 
 __all__ = [
     "DP_MODEL_FORMAT",
@@ -36,4 +38,5 @@ __all__ = [
     "num_histogram_queries",
     "per_site_tree_budget",
     "train_dp_gbdt",
+    "validate_dp_preconditions",
 ]
