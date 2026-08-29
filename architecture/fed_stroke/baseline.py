@@ -14,6 +14,7 @@ import json
 import math
 import tomllib
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -24,6 +25,41 @@ from fed_stroke.dp import DPBooster
 from fed_stroke.metrics import compute_binary_metrics
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
 from fed_stroke.task import replace_keys, resolve_run_split
+
+
+class LoadedModel(NamedTuple):
+    """A saved final model, loaded + format-sniffed (spec 1.1.b §1)."""
+    booster: object   # xgb.Booster or DPBooster
+    fmt: str          # "xgboost-json" or the verbatim dp-gbdt format string
+    n_trees: int
+
+
+def load_saved_booster(path) -> LoadedModel:
+    """Format-sniffing loader for a saved `final_model.json` — the ONE place a saved
+    model file is opened (extracted from eval_final_model.py; spec 1.1.b Decision 13).
+
+    A DP model carries "format": "dp-gbdt-v*"; an XGB model does not. The sniff
+    routes on the PREFIX so a stale-version DP artifact reaches
+    DPBooster.from_json_bytes and fails with the clear version-mismatch error, never
+    a cryptic XGBoost parse error. The XGB branch sets eval_metric=auc (matching the
+    FL run); DPBooster has no set_param and eval_metric is irrelevant to its predict.
+    """
+    path = Path(path)
+    data = path.read_bytes()
+    try:
+        fmt = json.loads(data.decode("utf-8")).get("format") or ""
+        is_dp = fmt.startswith("dp-gbdt-")
+    except (ValueError, UnicodeDecodeError):
+        is_dp = False   # XGBoost's JSON is not our flat dp-gbdt payload
+
+    if is_dp:
+        bst = DPBooster.from_json_bytes(data)
+        return LoadedModel(booster=bst, fmt=fmt, n_trees=len(bst.trees))
+    bst = xgb.Booster()
+    bst.load_model(str(path))
+    bst.set_param({"eval_metric": "auc"})
+    return LoadedModel(booster=bst, fmt="xgboost-json",
+                       n_trees=bst.num_boosted_rounds())
 
 
 def load_matched_config(pyproject_path) -> tuple[dict, int]:

@@ -172,6 +172,10 @@ in Phase v1.3.
   changes the utility landscape —
   `max_depth` and `min_child_weight` in particular trade off differently
   under histogram noise.
+  Driver + report machinery: docs/specs/1_1_b_dp_sweep_driver.md
+  (`scripts/run_dp_sweep.py`, the A→B→C comparator sweep on one shared
+  config; rehearsed on the example halves — the real run stays behind the
+  gate below and is the single command documented in that spec §6.5).
   - **GATE (blocking) — independent DP/privacy review of the accountant
     before this runs on real patient data.** 1.1.b is the first task that
     reports ε as a claim about real Geneva patients, not a synthetic sanity

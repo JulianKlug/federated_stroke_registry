@@ -1,11 +1,12 @@
 """Systematic HPO harness driver (roadmap 1.1.a).
 
-The ONLY component that touches the process boundary: it drives the real federated
-pipeline by repeatedly firing `flwr run . <federation>` with per-trial `--run-config`
-overrides, scores each trial's saved model offline on both Geneva halves, selects a
-winner by mean site AUC-ROC (tie-break lower cross-site variance), re-runs the winner
-once against a patient-disjoint hold-out, and emits four artifacts (leaderboard,
-results JSON, narrowed ranges, tuned-config TOML).
+One of the two components that touch the process boundary (the other is
+`run_dp_sweep.py`, roadmap 1.1.b — both share `scripts/flwr_proc.py`): it drives
+the real federated pipeline by repeatedly firing `flwr run . <federation>` with
+per-trial `--run-config` overrides, scores each trial's saved model offline on both
+Geneva halves, selects a winner by mean site AUC-ROC (tie-break lower cross-site
+variance), re-runs the winner once against a patient-disjoint hold-out, and emits
+four artifacts (leaderboard, results JSON, narrowed ranges, tuned-config TOML).
 
 All pure logic (grid, objective, ranking, artifact shaping) lives in
 `fed_stroke.hpo`; this file only orchestrates. See docs/specs/1_1_a_hpo_harness.md §4.4.
@@ -20,104 +21,30 @@ Examples (run from architecture/):
 import argparse
 import json
 import math
-import os
-import signal
-import socket
-import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import xgboost as xgb
 
-# Make `fed_stroke` importable regardless of CWD (script lives in scripts/).
-ARCH_DIR = Path(__file__).resolve().parent.parent
-REPO_ROOT = ARCH_DIR.parent
-sys.path.insert(0, str(ARCH_DIR))
+# Make `fed_stroke` (and the scripts-dir commons) importable regardless of CWD.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from flwr_proc import (  # noqa: E402
+    REPO_ROOT,
+    _half_paths,
+    _json_safe,
+    _load_pyproject,
+    _operating_point,
+    _run_flwr,
+    preflight_superlink,
+)
 
 from fed_stroke import hpo  # noqa: E402
 from fed_stroke.baseline import score_booster_on_half  # noqa: E402
 from fed_stroke.task import HOLDOUT_PARTITION_SEED  # noqa: E402
 
-PYPROJECT = ARCH_DIR / "pyproject.toml"
 
-
-# --------------------------------------------------------------------------- #
-# pyproject-derived fixed facts (single committed source, §4.6)
-# --------------------------------------------------------------------------- #
-def _load_pyproject():
-    with open(PYPROJECT, "rb") as fh:
-        return tomllib.load(fh)
-
-
-def _superlink_hostport(cfg):
-    addr = cfg["tool"]["fed_stroke"]["superlink"]["address"]
-    host, port = addr.rsplit(":", 1)
-    return host, int(port)
-
-
-def _half_paths(cfg):
-    """Absolute parquet paths for each pinned SuperNode half, resolved against the
-    repo root (the ServerApp/SuperNode CWD, where `out/geneva_half_*.parquet` live).
-    """
-    nodes = cfg["tool"]["fed_stroke"]["nodes"]
-    return [(REPO_ROOT / node["data-path"]).resolve() for node in nodes.values()]
-
-
-def _operating_point(cfg):
-    return cfg["tool"]["flwr"]["app"]["config"]["operating-point"]
-
-
-# --------------------------------------------------------------------------- #
-# subprocess: one `flwr run`, bounded by a wall-clock timeout, group-killed
-# --------------------------------------------------------------------------- #
-def _flwr_bin():
-    cand = Path(sys.executable).parent / "flwr"
-    return str(cand) if cand.exists() else "flwr"
-
-
-def _run_flwr(federation, run_config, timeout):
-    """Fire one `flwr run . <federation> --stream --run-config <cfg>` with
-    `shell=False` (a list, so flwr's TOML parser — not a shell — consumes the value
-    quotes) and a wall-clock cap. Returns (ok, timed_out).
-
-    `--stream` is load-bearing: plain `flwr run` submits the run and returns
-    immediately (flwr 1.31), so without it the driver would race the ServerApp's
-    model write. `--stream` blocks until the run reaches a terminal state (mirroring
-    smoke_pipeline.sh).
-
-    `build_strategy` sets `min_available_nodes=num-sites`, so a run whose federation
-    lost a SuperNode BLOCKS indefinitely rather than exiting non-zero — hence the
-    hard timeout. On timeout the child's whole process group is killed (it is its own
-    session leader via `start_new_session=True`), mirroring
-    `run_local_federation.sh`'s `kill -- -pgid`, so no orphaned superexec lingers.
-    """
-    cmd = [_flwr_bin(), "run", ".", federation, "--stream", "--run-config", run_config]
-    proc = subprocess.Popen(
-        cmd, cwd=str(ARCH_DIR),
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        start_new_session=True,
-    )
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-        if proc.returncode != 0:
-            print(f"    flwr run exited {proc.returncode}; tail:\n"
-                  + "\n".join(f"      {ln}" for ln in (out or "").splitlines()[-8:]))
-        return proc.returncode == 0, False
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=10)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        print(f"    flwr run exceeded --run-timeout={timeout}s; killed process group")
-        return False, True
-
-
-# --------------------------------------------------------------------------- #
 # scoring: load a saved model, score both halves offline (§3.4)
 # --------------------------------------------------------------------------- #
 def _load_booster(model_path):
@@ -155,19 +82,6 @@ def _full_site_metrics(model_path, half_paths, operating_point, holdout_frac):
             split_seed=42, holdout_frac=holdout_frac, holdout_eval=True,
         )
     return out
-
-
-# --------------------------------------------------------------------------- #
-# JSON sanitation (strict artifacts: NaN -> null)
-# --------------------------------------------------------------------------- #
-def _json_safe(obj):
-    if isinstance(obj, float):
-        return None if math.isnan(obj) else obj
-    if isinstance(obj, dict):
-        return {k: _json_safe(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_json_safe(v) for v in obj]
-    return obj
 
 
 # --------------------------------------------------------------------------- #
@@ -347,14 +261,7 @@ def main() -> None:
 
     # TCP probe proves the SuperLink listener is up, but NOT that both SuperNodes are
     # alive/pinned — so a canary run follows.
-    host, port = _superlink_hostport(cfg)
-    try:
-        with socket.create_connection((host, port), timeout=5):
-            pass
-    except OSError as exc:
-        raise SystemExit(
-            f"cannot reach SuperLink Control-API {host}:{port} ({exc}). "
-            "Bring the federation up: scripts/run_local_federation.sh start")
+    preflight_superlink(cfg)
 
     canary = min(runnable, key=lambda t: t["total-trees"])
     canary_dir = out_dir / "_canary"
