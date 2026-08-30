@@ -154,7 +154,7 @@ in Phase v1.3.
   patient data (that is gated in 1.1.b), so no real-ε claim is made here. Closes
   the downstream integration item flagged in
   docs/specs/1_1_prereq_dp_plugpoint.md §4.5. Prerequisite for 1.1.b.
-- [ ] 1.1.a″ DP remediation (response to the 1.1.b gate reviews). The
+- [x] 1.1.a″ DP remediation (response to the 1.1.b gate reviews). The
   independent review ran on 2026-07-22 with two reviewers: verdicts BLOCK
   (reviewer A, system/pipeline level) and approve-with-conditions (reviewer B,
   mechanism level). Both independently confirmed the accountant math and the
@@ -189,11 +189,12 @@ in Phase v1.3.
     the author's blind spots (both errors above were caught only by an
     independent re-derivation at spec stage). Record the sign-off (reviewer,
     date, scope) in `docs/logbook.md`.
-    **Status (2026-07-22): review round 1 complete — gate NOT passed.**
-    Accountant math confirmed by both reviewers; six blocking pipeline/
-    mechanism findings must be remediated (1.1.a″,
-    docs/specs/1_1_a_doubleprime_dp_remediation.md) and the packet re-reviewed
-    before this item runs on real patient data.
+    **Status (2026-08-30): GATE PASSED.** Round 1 (2026-07-22) confirmed the
+    accountant math but blocked on six pipeline findings; remediated in 1.1.a″
+    and the node-owned provenance fix (38bf988). Re-review: both reviewers
+    sign off, deviations A-C3/B-F9 agreed (docs/logbook.md 2026-08-30). Scope
+    is Geneva-only; Shenzhen integration needs a short addendum review.
+    Remaining blocker for the real run: frozen-schema Geneva halves.
 - [ ] 1.1.c Search method matched to compute budget: Optuna / TPE if
   evaluation runs are cheap, coarse grid otherwise. Rényi-DP composition
   accounting across rounds throughout.

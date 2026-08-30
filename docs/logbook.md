@@ -304,3 +304,24 @@
   (prepare_geneva_halves.py), which is the informal basis for skipping F9. Revisit both at
   Shenzhen integration (A-C3's disclosure point becomes load-bearing there).
 
+- 2026-08-30 — **R8 GATE PASSED — sign-off recorded.** Both independent reviewers sign off on
+  the refreshed DP accountant packet (revision 2026-07-23, remediation 1.1.a″ at 7c43b16 +
+  node-owned provenance fix 38bf988) and AGREE with the recorded deviations (A-C3 and B-F9
+  skipped for the Geneva-only phase; entry above). Reported by the user (operator); no
+  separate sign-off document — this entry is the record.
+  - Reviewer A: re-review verdict "Approve with conditions" (findings_A_rereview.md); C1/C2
+    landed (38bf988), C3 waived. Scope: Claims 1–9, §5 gate coverage, §7 assumptions and
+    release boundary, remediation code paths. Signed off 2026-08-30.
+  - Reviewer B: round-2 verdict "Approve with conditions" (findings_B_rev2.md); F8 landed
+    (38bf988), F9 waived. Scope: packet §2/§7 against code, F4–F7 closure, six joint blockers
+    as wired, tests/dp executed. Signed off 2026-08-30.
+  - `accounting.py` verified and frozen by both. Scope of the sign-off is the **Geneva-only
+    2-node federation**; Shenzhen integration re-opens §7 row 11 (cross-site disjointness) and
+    the A-4 disclosure point and needs a short addendum review (reviewer A).
+  - Non-blocking packet-hygiene items (A-C4/C5/C6, B-F6′/F10) remain open; they gate
+    circulation of the packet outside the project, not the 1.1.b run.
+  - 1.1.a″ acceptance now complete except the non-DP arm-A re-run on the deduped halves (a
+    real-data step; it is arm A of the 1.1.b sweep itself). **1.1.b may run on real
+    frozen-schema Geneva data once those halves exist** (preprocessing track) — flip both
+    nodes' data-provenance in pyproject [tool.fed_stroke.nodes] and run spec 1.1.b §6.5.
+
