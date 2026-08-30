@@ -58,10 +58,11 @@ metrics-dir = "out/metrics"  # where the per-run site-stratified JSON is written
 n-boot = 1000                # bootstrap resamples for per-metric 95% CIs (§4.1); determinism via boot-seed
 boot-seed = 0                # RNG seed for reproducible bootstrap CIs
 
-# Data provenance of the run (spec 1.1.a″ R2/R6; same vocabulary as run_hpo's --data-provenance:
-# "example-halves" | "real-frozen-schema"). Gates the DP safety rails: the dp.insecure-test
-# noise-seed hatch is REJECTED and the privacy ledger append is REQUIRED when a run declares
-# real-frozen-schema data. Runs on real frozen-schema Geneva data MUST override this.
+# The SUBMITTER's data-provenance declaration ("example-halves" | "real-frozen-schema"; same
+# vocabulary as the drivers' --data-provenance). NOT authoritative: the DP rails (R2 hatch, R6
+# ledger) key off the NODE-owned [tool.fed_stroke.nodes.*].data-provenance, and the client
+# refuses a DP run whose declaration disagrees with the node's (reviewer A C1 / B F8). It is
+# stamped into artifacts and must be overridden to match on real frozen-schema runs.
 data-provenance = "example-halves"
 
 # HPO split protocol (roadmap 1.1.a; docs/specs/1_1_a_hpo_harness.md §4.5/§4.6).
@@ -103,11 +104,8 @@ dp.delta = 1e-5
 dp.clip-bound = 1.0              # geometric leaf clip |w| <= clip_bound (post-processing; ZERO ε effect)
 dp.max-bins = 32
 dp.bin-strategy = "fixed-range"  # "fixed-range" (data-independent, DP-safe) | "quantile" (NON-DP arms only)
-# Append-only cross-run privacy ledger (spec 1.1.a″ R6). Each site appends its authorized
-# (k, σ, ε) on the FIRST train call of every real-data DP run (dp.enabled, mechanism not
-# identity, data-provenance = "real-frozen-schema"); relative path resolves against the
-# SuperNode working directory, so the ledger stays site-local.
-dp.ledger-path = "out/dp_ledger.jsonl"
+# The privacy ledger path is NODE-owned ([tool.fed_stroke.nodes.*].dp-ledger-path), not a
+# run-config key: the submitter must not be able to redirect a site's ledger (A C1).
 
 # Secure-topology values, roadmap 1.e (docs/specs/1e_secure_topology.md §4.5/§4.6).
 # Deliberately NOT [tool.flwr.federations.*]: `flwr run` migrates that legacy block
@@ -126,8 +124,15 @@ ca-cert = "architecture/.secrets/ca.crt"  # repo-relative; resolved to absolute 
 # reply sends instead of the exact training count (which is data-dependent under add/remove
 # adjacency and not covered by the accountant). Approximate cohort size rounded to hundreds —
 # bagging only needs relative weights; exactness buys nothing.
-node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", key = "node_A", dp-site-weight = 1000 }
-node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B", dp-site-weight = 1000 }
+# data-provenance / dp-ledger-path (reviewer A C1, B F8): NODE-owned facts the DP rails key off
+# — the R6 ledger append and the R2 insecure-test hatch — so a submitter's run-config can neither
+# downgrade a real node to "example" (unledgered spend) nor redirect its ledger. The client
+# fail-closes without them and refuses a run whose run-config declaration disagrees. Flip both
+# nodes to "real-frozen-schema" when the frozen-schema halves are in place. The ledger path is
+# repo-relative here and resolved absolute by run_local_federation.sh (append-only, site-local
+# per spec 1.1.a″ R6; each site appends its authorized (k, σ, ε) on its first train call).
+node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", key = "node_A", dp-site-weight = 1000, data-provenance = "example-halves", dp-ledger-path = "out/dp_ledger.jsonl" }
+node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B", dp-site-weight = 1000, data-provenance = "example-halves", dp-ledger-path = "out/dp_ledger.jsonl" }
 
 [dependency-groups]
 # opacus (pulls torch, ~heavy) is the DP-accountant equivalence-gate reference ONLY

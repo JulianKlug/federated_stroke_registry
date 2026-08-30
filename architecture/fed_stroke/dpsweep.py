@@ -129,22 +129,21 @@ def resolve_shared_config(app_cfg: dict, tuned_table: dict | None = None):
 
 
 def build_arm_run_config(arm, shared_overrides, strategy, split_seed, out_dir,
-                         provenance, ledger_path) -> str:
+                         provenance) -> str:
     """The per-arm `--run-config` string, via hpo.build_run_config (inherits
     TOML-quoted scalars, sorted dotted keys, absolute model/metrics dirs,
     save-model=true, n-boot=0 — offline scoring owns the CIs).
 
-    `dp.ledger-path` is threaded as an ABSOLUTE path into EVERY arm (§4.2): the
-    SuperNode writes the ledger relative to ITS CWD, the driver reads at
-    --ledger-path — one absolute path makes them coincide regardless of CWD.
-    A and B carry it but never append (provenance-and-mechanism gated).
+    `data-provenance` rides along as the SUBMITTER's declaration only: the node's
+    own `node_config` value is authoritative and the client refuses a run whose
+    declaration disagrees (reviewer A C1 / B F8). The ledger path is node-owned
+    too and is deliberately NOT threaded here (supersedes spec Decision 11).
     """
     arm_dir = Path(out_dir) / arm["label"]
     override = {
         **shared_overrides,
         **arm["dp_overrides"],
         "data-provenance": provenance,
-        "dp.ledger-path": str(ledger_path),
     }
     return hpo.build_run_config(
         override, strategy, split_seed, arm_dir, arm_dir,

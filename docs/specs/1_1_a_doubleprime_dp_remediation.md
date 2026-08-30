@@ -437,3 +437,21 @@ labels undersell the combined loader/split/routing rework.
   release boundary (earliest v1.3 headline); R5's boundary declaration covers 1.1.b.
 - Cross-site overlap *enforcement* — stated assumption + v1.3 follow-up (R7).
 - Subsampling amplification (q < 1) — the learner remains q = 1 by design (1.1.a′).
+
+## Post-re-review fixes (2026-08-30)
+
+Both reviewers approved with conditions (A: `dp_accountant_review_findings_A_rereview.md`;
+B: `dp_accountant_review_findings_B_rev2.md`). The blocking ones, landed:
+
+- **A-C1 ≡ B-F8 — node-owned provenance/ledger.** R2's hatch refusal and R6's ledger append
+  keyed off `run_config["data-provenance"]` (default `example-halves`), which the `flwr run`
+  submitter sets — a real run launched with the default spent ε unledgered. Now `node_config`
+  declares `data-provenance` + `dp-ledger-path`; `validate_dp_run_provenance()` fail-closes
+  without them and refuses a disagreeing run-config declaration. See spec 1.1.b addendum.
+- **A-C2 — cyclic under-ledgering.** The append fires on `global_round == 1`; cyclic trains one
+  site per round, so the second site never ledgered. Cyclic + DP is now refused on real data
+  (client gate + sweep driver). Ledgering on first participation is the v1.3 alternative if
+  cyclic is ever needed on real data.
+
+Remaining conditions (A-C3..C6, B-F9, F6′, F10) are documentation / one-off checks tracked in
+`docs/logbook.md`.

@@ -79,7 +79,7 @@ class DPConfig:
     insecure_test: bool = False
 
     @classmethod
-    def from_run_config(cls, cfg: dict) -> "DPConfig":
+    def from_run_config(cls, cfg: dict, node_provenance: str | None = None) -> "DPConfig":
         """Map cfg["dp"] (already through unflatten_dict + task.replace_keys) to a DPConfig.
 
         Keys arrive with `-`→`_` already applied to KEYS by replace_keys; enum-like VALUES
@@ -92,6 +92,11 @@ class DPConfig:
         `dp.insecure-test = true` hatch, itself rejected when `data-provenance` is
         "real-frozen-schema": no run whose ε could be claimed on real patients may ever draw
         deterministic noise.
+
+        `node_provenance` (the NODE-OWNED `node_config["data-provenance"]`) is authoritative
+        when given (reviewer A C1 / B F8): the submitter's cfg string cannot unlock the hatch
+        on a real node. The cfg fallback only serves callers without a node context (tests,
+        the single-site prototype).
         """
         dp = cfg.get("dp", {})
 
@@ -100,7 +105,8 @@ class DPConfig:
 
         if dp.get("noise_seed") is not None and dp.get("enabled", cls.enabled):
             insecure = bool(dp.get("insecure_test", False))
-            provenance = cfg.get("data_provenance", "example-halves")
+            provenance = (node_provenance if node_provenance is not None
+                          else cfg.get("data_provenance", "example-halves"))
             if not insecure:
                 raise ValueError(
                     "dp.noise-seed with dp.enabled = true is refused: DP noise must draw fresh "

@@ -23,6 +23,10 @@ from fed_stroke.metrics import (
 from fed_stroke.strategies import DPFedXgbBagging, OrderedFedXgbCyclic
 from fed_stroke.task import replace_keys
 
+# Loopback-only: where the two local SuperNodes (pyproject [tool.fed_stroke.nodes]
+# dp-ledger-path, repo-root-relative) write their shared ledger.
+LOOPBACK_LEDGER_PATH = "out/dp_ledger.jsonl"
+
 # Create ServerApp
 app = ServerApp()
 
@@ -252,11 +256,12 @@ def main(grid: Grid, context: Context) -> None:
                 m.get("num_releases"), m.get("per_site_trees"), dp.delta,
             )
             # R6 reporting rule: every artifact reporting a per-run ε also states the composed
-            # ledger-total ε to date. The ledger is site-local; in the loopback deployment (and
-            # any Geneva-operated aggregator sharing the sites' filesystem) it is readable here.
-            totals = dp_ledger.ledger_total(
-                context.run_config.get("dp.ledger-path", "out/dp_ledger.jsonl"), dp.delta
-            )
+            # ledger-total ε to date. The ledger path is NODE-owned (node_config, reviewer A
+            # C1) — the ServerApp has no node_config, so this is a loopback-only convenience
+            # read at the committed default (the nodes' pyproject dp-ledger-path, resolved
+            # against the shared repo-root CWD). The authoritative composition is the sweep
+            # driver's, which reads the nodes' declared path.
+            totals = dp_ledger.ledger_total(LOOPBACK_LEDGER_PATH, dp.delta)
             if totals:
                 log(INFO, "Composed ledger-total ε to date (R6, per site, δ=%s): %s",
                     dp.delta, totals)

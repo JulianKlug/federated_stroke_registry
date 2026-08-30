@@ -143,3 +143,53 @@ def test_gate_enforces_authorized_round_count():
     kw["global_round"] = 21                            # σ was calibrated for 20 rounds
     with pytest.raises(ValueError, match="authorized round count"):
         validate_dp_preconditions(**kw)
+
+
+# --- run provenance gate (reviewer A C1/C2, reviewer B F8) --------------------
+from fed_stroke.dp.preconditions import (  # noqa: E402
+    PROVENANCE_EXAMPLE,
+    PROVENANCE_REAL,
+    validate_dp_run_provenance,
+)
+
+_REAL_NODE = {"data-provenance": PROVENANCE_REAL, "dp-ledger-path": "/abs/dp_ledger.jsonl"}
+_EXAMPLE_NODE = {"data-provenance": PROVENANCE_EXAMPLE}
+
+
+def test_run_provenance_is_node_owned_and_fail_closed():
+    # No node declaration -> refuse (never default to "example").
+    with pytest.raises(ValueError, match="data-provenance"):
+        validate_dp_run_provenance({"data-path": "x.parquet"}, {}, "bagging")
+    # Unknown vocabulary -> refuse.
+    with pytest.raises(ValueError, match="data-provenance"):
+        validate_dp_run_provenance({"data-provenance": "prod"}, {}, "bagging")
+    assert validate_dp_run_provenance(_EXAMPLE_NODE, {}, "bagging") == PROVENANCE_EXAMPLE
+
+
+def test_run_provenance_submitter_cannot_override_node():
+    # The default run-config ("example-halves") on a REAL node is refused, never silently
+    # downgraded into an unledgered spend (B F8).
+    with pytest.raises(ValueError, match="disagrees"):
+        validate_dp_run_provenance(_REAL_NODE, {"data-provenance": PROVENANCE_EXAMPLE},
+                                   "bagging")
+    # Nor can a submitter promote example data to a real-ε claim.
+    with pytest.raises(ValueError, match="disagrees"):
+        validate_dp_run_provenance(_EXAMPLE_NODE, {"data-provenance": PROVENANCE_REAL},
+                                   "bagging")
+    # Absent or agreeing declaration -> the node's value.
+    assert validate_dp_run_provenance(_REAL_NODE, {}, "bagging") == PROVENANCE_REAL
+    assert validate_dp_run_provenance(_REAL_NODE, {"data-provenance": PROVENANCE_REAL},
+                                      "bagging") == PROVENANCE_REAL
+
+
+def test_run_provenance_real_requires_node_ledger_path():
+    with pytest.raises(ValueError, match="dp-ledger-path"):
+        validate_dp_run_provenance({"data-provenance": PROVENANCE_REAL}, {}, "bagging")
+
+
+def test_run_provenance_refuses_cyclic_on_real_data():
+    # Cyclic ledgers only the round-1 site (A C2): refused on real data, still runnable as a
+    # rehearsal on example halves.
+    with pytest.raises(ValueError, match="cyclic"):
+        validate_dp_run_provenance(_REAL_NODE, {}, "cyclic")
+    assert validate_dp_run_provenance(_EXAMPLE_NODE, {}, "cyclic") == PROVENANCE_EXAMPLE

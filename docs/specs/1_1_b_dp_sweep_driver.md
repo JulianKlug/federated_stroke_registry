@@ -679,3 +679,24 @@ scripts dir, mirroring how they already insert `ARCH_DIR`.
     `results.json.ledger.unledgered_sites` — never blank/0. The underlying cyclic append
     gap is a landed-code limitation the driver surfaces, not fixes; the go/no-go should
     rest on bagging (§4.4, §4.8, Risk §8).
+
+## Addendum 2026-08-30 — re-review conditions A-C1/C2, B-F8 (supersedes parts of §4.2, §4.4, §4.8, Decisions 11/15)
+
+Reviewer A's re-review (`docs/reviews/dp_accountant_review_findings_A_rereview.md`, C1/C2)
+and reviewer B's round 2 (`dp_accountant_review_findings_B_rev2.md`, F8) found the DP rails
+keyed off submitter-controlled `run_config`. Landed fixes:
+
+- **Provenance and ledger path are node-owned.** `node_config` carries `data-provenance` and
+  `dp-ledger-path` (materialized by `run_local_federation.sh` from
+  `[tool.fed_stroke.nodes]`, ledger path resolved absolute). `validate_dp_run_provenance()`
+  (`fed_stroke/dp/preconditions.py`) fail-closes the DP branch without them, refuses a
+  `run_config` declaration that disagrees with the node's, and requires a node ledger path on
+  real data. `_maybe_append_ledger` and the `DPConfig` insecure-test hatch read the node value.
+- **Decision 11 superseded:** the driver no longer threads `dp.ledger-path` into the run
+  config and `--ledger-path` is gone; it reads the nodes' declared path
+  (`flwr_proc._node_ledger_path`) and refuses to start when `--data-provenance` disagrees
+  with the nodes' declaration (`_node_provenance`). `data-provenance` in the run config
+  remains the submitter's declaration, cross-checked by the client.
+- **Decision 15 narrowed:** `--strategy cyclic` + DP is refused on real-frozen-schema data by
+  both the client gate and the driver; it stays runnable as a rehearsal on example halves. The
+  §4.4 cyclic ledger assertions and the `UNLEDGERED` rendering remain as defense in depth.

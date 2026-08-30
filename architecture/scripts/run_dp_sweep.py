@@ -41,6 +41,8 @@ from flwr_proc import (  # noqa: E402
     _half_paths,
     _json_safe,
     _load_pyproject,
+    _node_ledger_path,
+    _node_provenance,
     _operating_point,
     _run_flwr,
     preflight_superlink,
@@ -58,9 +60,9 @@ def _parse_args():
     p.add_argument("--federation", default="local-deployment",
                    help="flwr federation to drive (swap for the cross-site link in v1.3)")
     p.add_argument("--strategy", choices=["bagging", "cyclic"], default="bagging",
-                   help="bagging is the 1.1.b deliverable; cyclic is runnable but its "
-                        "ledger under-accounts the non-round-1 site (Risk §8) — the "
-                        "go/no-go should rest on bagging")
+                   help="bagging is the 1.1.b deliverable; cyclic is REFUSED on "
+                        "real-frozen-schema data (only the round-1 site would ledger its "
+                        "spend — reviewer A C2) and stays runnable as a rehearsal")
     p.add_argument("--epsilons", type=float, nargs="+", default=[1.0, 3.0, 5.0, 10.0],
                    help="pilot grid (roadmap contract: 1 3 5 10); run DESCENDING "
                         "regardless of input order")
@@ -79,14 +81,11 @@ def _parse_args():
     p.add_argument("--out-dir", default="out/dp_sweep",
                    help="artifact dir; relative resolves against the repo root; "
                         "per-arm subdirs inside")
-    p.add_argument("--ledger-path", default="out/dp_ledger.jsonl",
-                   help="relative resolves against the repo root; resolved ABSOLUTE "
-                        "and threaded into every run as dp.ledger-path so the "
-                        "SuperNode writes where the driver reads")
     p.add_argument("--data-provenance", choices=["example-halves", "real-frozen-schema"],
                    default="example-halves",
-                   help="real-frozen-schema arms the ledger append and requires "
-                        "--operator + --gate-ack")
+                   help="must AGREE with the nodes' own declaration in pyproject "
+                        "[tool.fed_stroke.nodes] (node-owned; the client refuses a "
+                        "mismatch); real-frozen-schema requires --operator + --gate-ack")
     p.add_argument("--operator", default=None,
                    help="required for real provenance; defaults to the login user "
                         "on example-halves")
@@ -119,7 +118,16 @@ def main() -> None:
 
     # Step 0 — absolute paths + pyproject facts + the real-provenance guard.
     out_dir = _resolve(args.out_dir)
-    ledger_path = _resolve(args.ledger_path)
+    # Node-owned DP-rail facts (reviewer A C1 / B F8): the SuperNodes write the ledger at
+    # THEIR configured path and gate on THEIR provenance; the driver reads the same file
+    # and must agree on provenance, or the client refuses every DP run.
+    ledger_path = _node_ledger_path(cfg)
+    node_prov = _node_provenance(cfg)
+    if node_prov != args.data_provenance:
+        raise SystemExit(
+            f"--data-provenance {args.data_provenance!r} disagrees with the nodes' own "
+            f"declaration {node_prov!r} (pyproject [tool.fed_stroke.nodes]). The node "
+            "value is authoritative; the client would refuse every DP run.")
     half_paths = _half_paths(cfg)
     operating_point = _operating_point(cfg)
     app_cfg = cfg["tool"]["flwr"]["app"]["config"]
@@ -137,6 +145,12 @@ def main() -> None:
             "recorded in docs/logbook.md). The driver cannot verify the "
             "sign-off; refusing to start without the acknowledgement.")
     operator = args.operator or getpass.getuser()
+    if real and args.strategy == "cyclic":
+        # A C2: cyclic ledgers only the round-1 site; the client refuses it on real data,
+        # so refuse here before firing anything.
+        raise SystemExit("--strategy cyclic is refused on real-frozen-schema data: only "
+                         "the round-1 site would ledger its spend (cyclic round-1 append "
+                         "gap). Run the go/no-go sweep on bagging.")
 
     # Step 1 — shared config, arm plan, divisibility; --dry-run exits here.
     tuned_table = None
@@ -153,7 +167,7 @@ def main() -> None:
     run_cfgs = {
         arm["label"]: dpsweep.build_arm_run_config(
             arm, shared, args.strategy, args.split_seed, out_dir,
-            args.data_provenance, ledger_path)
+            args.data_provenance)
         for arm in plan
     }
     print(f"[plan] strategy={args.strategy} federation={args.federation} "

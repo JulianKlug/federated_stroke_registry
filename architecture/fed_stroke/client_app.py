@@ -30,6 +30,7 @@ from fed_stroke.dp import (
     validate_dp_preconditions,
 )
 from fed_stroke.dp import ledger as dp_ledger
+from fed_stroke.dp.preconditions import PROVENANCE_REAL, validate_dp_run_provenance
 from fed_stroke.metrics import compute_binary_metrics
 # derive_num_rounds lives in server_app (torch-free flwr symbols only); the client imports it so
 # client and server agree on the round count without duplicating the rule (same as hpo.py:20; the
@@ -153,13 +154,15 @@ def _maybe_append_ledger(context, dp, params, local_epochs, train_method,
 
     Fires on the site's FIRST train call of the run (global_round == 1): the full authorized
     (k, σ, ε) is known upfront (σ is run-calibrated), and recording intent-to-spend is
-    conservative in the right direction — a run that crashes later has still spent noise, and
-    waiting for the final round would miss cyclic's non-final site entirely. Only real noise
-    mechanisms on declared real-frozen-schema data are recorded: identity (arm B) spends no ε,
-    and synthetic/example runs make no per-patient claim. Returns the appended entry or None."""
+    conservative in the right direction — a run that crashes later has still spent noise.
+    Only real noise mechanisms on NODE-declared real-frozen-schema data are recorded: identity
+    (arm B) spends no ε, and example runs make no per-patient claim. Provenance and the ledger
+    path are read from `node_config` — node-owned, never the submitter's run_config (A C1 /
+    B F8). Cyclic is refused upstream on real data (A C2), so round 1 covers every site here.
+    Returns the appended entry or None."""
     if global_round != 1 or dp.mechanism == "identity":
         return None
-    if context.run_config.get("data-provenance") != "real-frozen-schema":
+    if context.node_config.get("data-provenance") != PROVENANCE_REAL:
         return None
     total_trees = context.run_config["total-trees"]
     num_sites = context.run_config["num-sites"]
@@ -174,7 +177,7 @@ def _maybe_append_ledger(context, dp, params, local_epochs, train_method,
         "train_method": train_method,
     }
     return dp_ledger.append_entry(
-        context.run_config.get("dp.ledger-path", "out/dp_ledger.jsonl"),
+        context.node_config["dp-ledger-path"],
         site=site,
         mechanism=dp.mechanism,
         num_releases=mechanism.num_releases,
@@ -204,9 +207,15 @@ def train(msg: Message, context: Context) -> Message:
     cfg = replace_keys(unflatten_dict(context.run_config))
     params = cfg["params"]
     global_round = msg.content["config"]["server-round"]
-    dp = DPConfig.from_run_config(cfg)
+    # The node's own provenance declaration governs the R2 hatch (None -> cfg fallback; the DP
+    # branch below then fail-closes on a node that declares nothing).
+    dp = DPConfig.from_run_config(cfg, node_provenance=context.node_config.get("data-provenance"))
 
     if dp.enabled:
+        # Config-level gate FIRST (before any data is touched): node-owned provenance must be
+        # declared and agree with the submitter's run_config; real data needs a node ledger
+        # path; cyclic + DP is refused on real data (A C1/C2, B F8).
+        validate_dp_run_provenance(context.node_config, context.run_config, train_method)
         # DP branch: swap the whole learner (§4.4). Raw numpy X,y — NOT a DMatrix — and a
         # DPBooster serialized with its own JSON. The Flower transport envelope
         # (ArrayRecord([uint8]) at ["0"]) is identical to the XGB path; nothing else is shared.

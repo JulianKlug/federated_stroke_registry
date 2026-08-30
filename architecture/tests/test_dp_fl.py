@@ -223,6 +223,12 @@ def test_dpconfig_fail_closes_on_noise_seed():
     with pytest.raises(ValueError, match="real-frozen-schema"):
         DPConfig.from_run_config(real)
 
+    # The NODE's provenance is authoritative over the run_config string (A C1 / B F8): a
+    # submitter declaring "example-halves" cannot unlock the hatch on a real node.
+    with pytest.raises(ValueError, match="real-frozen-schema"):
+        DPConfig.from_run_config(hatch, node_provenance="real-frozen-schema")
+    assert DPConfig.from_run_config(real, node_provenance="example-halves").noise_seed == 123
+
     # dp disabled -> no DP claim -> the key is inert, not refused.
     off = DPConfig.from_run_config({"dp": {"enabled": False, "noise_seed": 5}})
     assert off.enabled is False
@@ -535,7 +541,8 @@ def test_dp_train_reply_sends_site_weight_not_exact_count(monkeypatch):
     }
     context = SimpleNamespace(
         run_config=run_config,
-        node_config={"data-path": "/data/geneva_half_A.parquet", "dp-site-weight": 1000},
+        node_config={"data-path": "/data/geneva_half_A.parquet", "dp-site-weight": 1000,
+                     "data-provenance": "example-halves"},
     )
     reply = client_app.train(msg, context)
     mr = next(iter(reply.content.metric_records.values()))
@@ -544,7 +551,8 @@ def test_dp_train_reply_sends_site_weight_not_exact_count(monkeypatch):
 
     # Unconfigured weight degrades to 1 (equal weights) — still never the exact count.
     context = SimpleNamespace(run_config=run_config,
-                              node_config={"data-path": "/data/geneva_half_A.parquet"})
+                              node_config={"data-path": "/data/geneva_half_A.parquet",
+                                           "data-provenance": "example-halves"})
     reply = client_app.train(msg, context)
     mr = next(iter(reply.content.metric_records.values()))
     assert mr["num-examples"] == 1
@@ -554,16 +562,21 @@ def test_dp_train_reply_sends_site_weight_not_exact_count(monkeypatch):
 
 def test_ledger_append_gating_and_content(tmp_path):
     """R6 harness integration: the site appends its authorized (k, σ, ε) exactly once per run
-    (first round), only for real noise mechanisms on declared real-frozen-schema data."""
+    (first round), only for real noise mechanisms on NODE-declared real-frozen-schema data.
+    Provenance and ledger path are node-owned (node_config), never the submitter's run_config
+    (reviewer A C1 / reviewer B F8)."""
     from types import SimpleNamespace
 
     from fed_stroke.client_app import _maybe_append_ledger
     from fed_stroke.dp import ledger as L
 
     ledger_path = tmp_path / "dp_ledger.jsonl"
-    run_config = {"data-provenance": "real-frozen-schema", "total-trees": 40, "num-sites": 2,
-                  "dp.ledger-path": str(ledger_path)}
-    ctx = SimpleNamespace(run_config=run_config)
+    node_real = {"data-path": "/data/geneva_half_A.parquet",
+                 "data-provenance": "real-frozen-schema", "dp-ledger-path": str(ledger_path)}
+    # A DEFAULT run_config (no provenance override at all) + gaussian on a real node MUST
+    # still ledger (B F8's requested test).
+    run_config = {"total-trees": 40, "num-sites": 2}
+    ctx = SimpleNamespace(run_config=run_config, node_config=node_real)
     dp = DPConfig(enabled=True, target_epsilon=30.0, delta=DELTA)
 
     entry = _maybe_append_ledger(ctx, dp, _params(), 1, "bagging", 1, "node_A")
@@ -581,10 +594,19 @@ def test_ledger_append_gating_and_content(tmp_path):
     # Identity (arm B) spends nothing.
     dp_id = DPConfig(enabled=True, mechanism="identity")
     assert _maybe_append_ledger(ctx, dp_id, _params(), 1, "bagging", 1, "node_A") is None
-    # Synthetic/example provenance makes no per-patient claim -> never ledgered.
-    ctx_syn = SimpleNamespace(run_config={**run_config, "data-provenance": "example-halves"})
+    # A node declaring example data makes no per-patient claim -> never ledgered, and the
+    # submitter's run_config cannot promote it.
+    ctx_syn = SimpleNamespace(run_config={**run_config, "data-provenance": "real-frozen-schema"},
+                              node_config={**node_real, "data-provenance": "example-halves"})
     assert _maybe_append_ledger(ctx_syn, dp, _params(), 1, "bagging", 1, "node_A") is None
-    assert len(L.read_entries(ledger_path)) == 1
+    # The submitter's run_config cannot demote a real node into an unledgered spend either:
+    # the old rail keyed on run_config["data-provenance"]; the ledger path is node-owned.
+    ctx_demote = SimpleNamespace(run_config={**run_config, "data-provenance": "example-halves",
+                                             "dp.ledger-path": str(tmp_path / "elsewhere.jsonl")},
+                                 node_config=node_real)
+    assert _maybe_append_ledger(ctx_demote, dp, _params(), 1, "bagging", 1, "node_A") is not None
+    assert len(L.read_entries(ledger_path)) == 2
+    assert not (tmp_path / "elsewhere.jsonl").exists()
 
 
 def test_identity_arm_b_routes_through_dp_train_round():

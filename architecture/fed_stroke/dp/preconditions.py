@@ -14,6 +14,12 @@ called by the client's DP train branch each round, unit-tested per condition:
 - the authorized round count for the run's calibrated σ (refuse rounds beyond the T_site used
   at calibration).
 
+A second, config-level gate — `validate_dp_run_provenance()` — runs BEFORE any data is touched
+(reviewer A C1/C2, reviewer B F8): data provenance and the ledger path are NODE-OWNED facts
+(`node_config`, beside `data-path`), never the submitter's `run_config`. A run whose declared
+provenance disagrees with the node's is refused, real data requires a node ledger path, and
+cyclic + DP is refused on real data (only the round-1 site would ledger its spend).
+
 Per-mechanism budget checks (NEVER a blanket σ > 0 — Laplace's `noise_multiplier` is nan by
 construction and `nan > 0` is False, which would reject every legitimate Laplace run):
 - gaussian: σ finite > 0, 0 < δ < 1, reported ε finite > 0 (validated on
@@ -28,8 +34,46 @@ import numpy as np
 from fed_stroke.dp.boost import DPConfig, FEATURE_RANGES, fixed_bin_edges
 
 
+PROVENANCE_EXAMPLE = "example-halves"
+PROVENANCE_REAL = "real-frozen-schema"
+_PROVENANCES = (PROVENANCE_EXAMPLE, PROVENANCE_REAL)
+
+
 def _fail(msg: str) -> None:
     raise ValueError(f"DP preconditions not met (spec 1.1.a″ R7) — {msg}")
+
+
+def validate_dp_run_provenance(node_config, run_config, train_method: str) -> str:
+    """Resolve the run's data provenance from the NODE (fail-closed) and return it.
+
+    The node operator owns `node_config["data-provenance"]` and `["dp-ledger-path"]`; the
+    `flwr run` submitter owns `run_config`. The rails that hang on provenance — the ledger
+    append (R6) and the insecure-test noise hatch (R2) — must key off the node's declaration,
+    or a default/stale run_config spends ε unledgered (A C1 / B F8):
+
+        node_config  data-provenance = real   ─┐
+        run_config   data-provenance = example ┴─► REFUSED (never silently downgraded)
+
+    Cyclic + DP on real data is refused (A C2): the ledger fires on each site's round-1 call,
+    but cyclic trains one site per round, so the second site's spend is never recorded.
+    """
+    node_prov = node_config.get("data-provenance")
+    if node_prov not in _PROVENANCES:
+        _fail(f"node_config must declare data-provenance in {list(_PROVENANCES)} (node-owned; "
+              f"got {node_prov!r}). The submitter's run_config cannot stand in for it.")
+
+    run_prov = run_config.get("data-provenance")
+    if run_prov is not None and run_prov != node_prov:
+        _fail(f"run_config data-provenance={run_prov!r} disagrees with the node's "
+              f"{node_prov!r}; the node's declaration is authoritative — fix the override.")
+
+    if node_prov == PROVENANCE_REAL and not node_config.get("dp-ledger-path"):
+        _fail("real-frozen-schema node must declare dp-ledger-path (node-owned ledger, R6).")
+
+    if node_prov == PROVENANCE_REAL and train_method == "cyclic":
+        _fail("train-method=cyclic with dp.enabled is refused on real data: only the round-1 "
+              "site ledgers its spend (cyclic round-1 append gap); use bagging.")
+    return node_prov
 
 
 def validate_dp_preconditions(*, X, y, patient_ids, dp: DPConfig, params: dict,

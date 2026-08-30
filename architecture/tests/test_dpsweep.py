@@ -4,8 +4,9 @@ Sub-second, synthetic-fixture tests matching the plain-pytest idiom of
 test_hpo.py / test_baseline.py. No live federation, no `flwr run`: the driver
 integration test monkeypatches `run_dp_sweep._run_flwr` with a fake that drops
 pre-built tiny models into the arm dirs and appends fake ledger lines at the
-`dp.ledger-path` parsed out of the run-config string it was handed (proving the
-driver reads the same absolute path it threaded, spec §4.2).
+NODE-owned ledger path (pyproject [tool.fed_stroke.nodes].dp-ledger-path — the
+driver reads the same file the SuperNodes write; reviewer A C1 supersedes the
+spec §4.2 run-config threading).
 """
 import importlib.util
 import json
@@ -179,9 +180,8 @@ def _shared():
 
 def test_run_config_strings_per_arm(tmp_path):
     plan = dpsweep.arm_plan([3], delta=1e-5)
-    ledger = tmp_path / "led.jsonl"
     cfgs = {a["label"]: dpsweep.build_arm_run_config(
-        a, _shared(), "bagging", 42, tmp_path, "example-halves", ledger)
+        a, _shared(), "bagging", 42, tmp_path, "example-halves")
         for a in plan}
     for label, cfg in cfgs.items():
         assert "params.subsample=1.0" in cfg
@@ -191,9 +191,9 @@ def test_run_config_strings_per_arm(tmp_path):
         assert "n-boot=0" in cfg
         assert "save-model=true" in cfg
         assert "data-provenance='example-halves'" in cfg
-        assert f"dp.ledger-path='{ledger}'" in cfg
+        # ledger path is node-owned (A C1): never a submitter run-config key
+        assert "dp.ledger-path" not in cfg
         assert f"model-dir='{tmp_path / label}'" in cfg
-        assert Path(str(ledger)).is_absolute()
     assert "dp.enabled=false" in cfgs["armA"]
     assert "dp.mechanism" not in cfgs["armA"]
     assert "dp.enabled=true" in cfgs["armB"]
@@ -674,7 +674,7 @@ def _parse_run_config(run_config):
     return out
 
 
-def _fake_cfg(half_paths):
+def _fake_cfg(half_paths, ledger_path, provenance="real-frozen-schema"):
     return {"tool": {
         "flwr": {"app": {"config": {
             "operating-point": 0.5, "num-sites": NUM_SITES,
@@ -686,17 +686,22 @@ def _fake_cfg(half_paths):
         "fed_stroke": {
             "superlink": {"address": "127.0.0.1:9093"},
             "nodes": {
-                "node_A": {"data-path": str(half_paths[0])},
-                "node_B": {"data-path": str(half_paths[1])},
+                "node_A": {"data-path": str(half_paths[0]),
+                           "data-provenance": provenance,
+                           "dp-ledger-path": str(ledger_path)},
+                "node_B": {"data-path": str(half_paths[1]),
+                           "data-provenance": provenance,
+                           "dp-ledger-path": str(ledger_path)},
             },
         },
     }}
 
 
-def _make_fake_runner(strategy, sites, fail_labels=()):
+def _make_fake_runner(strategy, sites, ledger_path, fail_labels=()):
     """Fake `_run_flwr`: drops a pre-built model into the model-dir parsed from
     the run-config string and, for real-provenance gaussian runs, appends ledger
-    entries AT THE dp.ledger-path IT WAS HANDED (2/C-run bagging, 1 cyclic)."""
+    entries at the NODE-owned ledger path (2/C-run bagging, 1 cyclic) — the real
+    client does the same from node_config, never from run_config."""
     calls = []
 
     def fake(federation, run_config, timeout):
@@ -725,7 +730,7 @@ def _make_fake_runner(strategy, sites, fail_labels=()):
                 n_appends = 2 if strategy == "bagging" else 1
                 for site in sites[:n_appends]:
                     dp_ledger.append_entry(
-                        cfg["dp.ledger-path"], site=site, mechanism="gaussian",
+                        ledger_path, site=site, mechanism="gaussian",
                         num_releases=meta["num_releases"],
                         noise_multiplier=meta["noise_multiplier"],
                         epsilon=meta["reported_epsilon"], delta=1e-5,
@@ -736,18 +741,19 @@ def _make_fake_runner(strategy, sites, fail_labels=()):
 
 
 def _drive(tmp_path, monkeypatch, strategy, provenance="real-frozen-schema",
-           fail_labels=(), extra_argv=(), out_name="sweep"):
+           fail_labels=(), extra_argv=(), out_name="sweep", node_provenance=None):
     halves = _two_halves(tmp_path, n=60)
     mod = _load_driver()
-    fake, calls = _make_fake_runner(strategy, HALVES, fail_labels)
-    monkeypatch.setattr(mod, "_load_pyproject", lambda: _fake_cfg(halves))
+    ledger = tmp_path / "dp_ledger.jsonl"
+    fake, calls = _make_fake_runner(strategy, HALVES, ledger, fail_labels)
+    monkeypatch.setattr(mod, "_load_pyproject",
+                        lambda: _fake_cfg(halves, ledger, node_provenance or provenance))
     monkeypatch.setattr(mod, "preflight_superlink", lambda cfg: None)
     monkeypatch.setattr(mod, "_run_flwr", fake)
     out_dir = tmp_path / out_name
-    ledger = tmp_path / "dp_ledger.jsonl"
     argv = ["run_dp_sweep.py", "--strategy", strategy,
             "--epsilons", "3", "1", "--n-boot", "0",
-            "--out-dir", str(out_dir), "--ledger-path", str(ledger),
+            "--out-dir", str(out_dir),
             "--data-provenance", provenance, *extra_argv]
     if provenance == "real-frozen-schema":
         argv += ["--operator", "tester", "--gate-ack", "test acknowledgement"]
@@ -756,9 +762,8 @@ def _drive(tmp_path, monkeypatch, strategy, provenance="real-frozen-schema",
     return mod, calls, out_dir, ledger
 
 
-@pytest.mark.parametrize("strategy", ["bagging", "cyclic"])
-def test_driver_end_to_end(tmp_path, monkeypatch, strategy):
-    mod, calls, out_dir, ledger = _drive(tmp_path, monkeypatch, strategy)
+def test_driver_end_to_end_bagging_real(tmp_path, monkeypatch):
+    mod, calls, out_dir, ledger = _drive(tmp_path, monkeypatch, "bagging")
     # plan order honored: A first, B, then C at descending ε
     assert calls == ["armA", "armB", "armC_eps3", "armC_eps1"]
     results = json.loads((out_dir / "results.json").read_text())
@@ -771,21 +776,41 @@ def test_driver_end_to_end(tmp_path, monkeypatch, strategy):
     for arm in results["arms"]:
         assert set(arm["metrics"]) == set(HALVES)
         assert all(m is not None for m in arm["metrics"].values())
-    # strategy-aware ledger accounting
-    entries = dp_ledger.read_entries(ledger)
-    per_run = 2 if strategy == "bagging" else 1
-    assert len(entries) == per_run * 2                    # 2 C runs fired
-    if strategy == "bagging":
-        assert results["ledger"]["unledgered_sites"] == []
-        assert dpsweep.UNLEDGERED_MARK not in report
-    else:
-        assert results["ledger"]["unledgered_sites"] == [HALVES[1]]
-        assert dpsweep.UNLEDGERED_MARK in report
-    # composed totals only for ledgered sites, via ledger_total
-    totals = results["ledger"]["ledger_total"]
-    assert set(totals) == set(HALVES[: 2 if strategy == "bagging" else 1])
+    # ledger: 2 entries per C run at the NODE-owned path, both sites accounted
+    assert len(dp_ledger.read_entries(ledger)) == 4
+    assert results["ledger"]["path"] == str(ledger)
+    assert results["ledger"]["unledgered_sites"] == []
+    assert dpsweep.UNLEDGERED_MARK not in report
+    assert set(results["ledger"]["ledger_total"]) == set(HALVES)
     assert dpsweep.REHEARSAL_BANNER not in report
     assert "test acknowledgement" in report
+
+
+def test_driver_cyclic_refused_on_real_data(tmp_path, monkeypatch):
+    # A C2: the client refuses cyclic + DP on real data; the driver refuses upfront.
+    with pytest.raises(SystemExit, match="cyclic"):
+        _drive(tmp_path, monkeypatch, "cyclic")
+
+
+def test_driver_cyclic_still_rehearses_on_example_halves(tmp_path, monkeypatch):
+    mod, calls, out_dir, ledger = _drive(tmp_path, monkeypatch, "cyclic",
+                                         provenance="example-halves")
+    assert calls == ["armA", "armB", "armC_eps3", "armC_eps1"]
+    assert not ledger.exists()
+    report = (out_dir / "report_1_1_b.md").read_text()
+    assert dpsweep.REHEARSAL_BANNER in report
+
+
+def test_driver_refuses_provenance_disagreeing_with_nodes(tmp_path, monkeypatch):
+    # A C1 / B F8: the submitter's --data-provenance cannot downgrade a real node ...
+    with pytest.raises(SystemExit, match="disagrees"):
+        _drive(tmp_path, monkeypatch, "bagging", provenance="example-halves",
+               node_provenance="real-frozen-schema")
+    # ... nor promote an example node to a real-ε claim.
+    with pytest.raises(SystemExit, match="disagrees"):
+        _drive(tmp_path, monkeypatch, "bagging", provenance="real-frozen-schema",
+               node_provenance="example-halves")
+    assert not (tmp_path / "sweep" / "results.json").exists()
 
 
 def test_driver_aborts_on_arm_a_failure(tmp_path, monkeypatch):
@@ -833,7 +858,8 @@ def test_driver_real_provenance_requires_operator_and_gate_ack(tmp_path,
                                                                monkeypatch):
     halves = _two_halves(tmp_path, n=60)
     mod = _load_driver()
-    monkeypatch.setattr(mod, "_load_pyproject", lambda: _fake_cfg(halves))
+    monkeypatch.setattr(mod, "_load_pyproject",
+                        lambda: _fake_cfg(halves, tmp_path / "dp_ledger.jsonl"))
     monkeypatch.setattr(sys, "argv",
                         ["run_dp_sweep.py", "--data-provenance",
                          "real-frozen-schema", "--operator", "tester"])

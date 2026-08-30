@@ -278,3 +278,20 @@
   duplicate caid included, no preprocessing): non-DP arm A, identity arm B, and gaussian arm C
   all complete over TLS — acceptance 2 now holds on the untouched example data. Packet §7
   assumption table gains row 14; the 1.1.b template records the encoding + per-half missing %.
+
+- 2026-08-30 — R8 re-review returned: **A: BLOCK → approve with conditions; B: approve with
+  conditions** (docs/reviews/dp_accountant_review_findings_A_rereview.md,
+  dp_accountant_review_findings_B_rev2.md — committed from reviewer worktrees). Both confirm the
+  accountant math and the six round-1 blockers closed. Blocking conditions fixed today:
+  **A-C1 ≡ B-F8** — DP rails (R2 hatch, R6 ledger) keyed off submitter-set
+  `run_config["data-provenance"]`; now node-owned (`node_config` data-provenance +
+  dp-ledger-path, `validate_dp_run_provenance()` fail-closed, disagreeing run-config refused;
+  driver `--ledger-path` removed, `--data-provenance` must match the nodes). **A-C2** — cyclic
+  ledgers only the round-1 site; cyclic + DP now refused on real data (client + driver),
+  rehearsal on example halves still allowed. Suite 282/282. **Still open before real run:**
+  A-C3 (boundary list for out/metrics + ledger, Shenzhen disclosure in packet §7.2),
+  B-F9 (cross-half patient_id disjointness check, logged). **Before packet circulates:** A-C4
+  (dp_local_boost docstring), A-C5 (ledger sha256 + count in report), A-C6 (dp-site-weight
+  fixed-before-run statement), B-F6′ (boost.py line refs, F6→F7 attribution, stale scope
+  bullet), B-F10 (sentinel-bin nit). No sign-off recorded yet — both are conditional on the
+  above.

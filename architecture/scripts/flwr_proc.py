@@ -51,6 +51,33 @@ def _operating_point(cfg):
     return cfg["tool"]["flwr"]["app"]["config"]["operating-point"]
 
 
+def _single_node_fact(cfg, key):
+    """One value agreed by every node in [tool.fed_stroke.nodes]; a missing key or a
+    disagreement between nodes is a config error, not something to paper over."""
+    nodes = cfg["tool"]["fed_stroke"]["nodes"]
+    values = {name: node.get(key) for name, node in nodes.items()}
+    missing = [name for name, val in values.items() if val is None]
+    if missing:
+        raise SystemExit(f"pyproject [tool.fed_stroke.nodes.*] missing {key!r} on "
+                         f"{missing} (node-owned DP-rail fact; reviewer A C1)")
+    distinct = set(values.values())
+    if len(distinct) != 1:
+        raise SystemExit(f"pyproject nodes disagree on {key!r}: {values}")
+    return distinct.pop()
+
+
+def _node_provenance(cfg):
+    """The nodes' own data-provenance declaration — the value the client's DP rails key off.
+    A driver's --data-provenance must AGREE with it (the client refuses otherwise)."""
+    return _single_node_fact(cfg, "data-provenance")
+
+
+def _node_ledger_path(cfg):
+    """The nodes' own ledger path (repo-root-relative in pyproject; the loopback topology
+    shares one file), resolved absolute — where the SuperNodes write and the driver reads."""
+    return (REPO_ROOT / _single_node_fact(cfg, "dp-ledger-path")).resolve()
+
+
 def preflight_superlink(cfg):
     """TCP probe of the SuperLink Control API. Proves the listener is up, but NOT
     that both SuperNodes are alive/pinned — drivers follow with their own cheapest
