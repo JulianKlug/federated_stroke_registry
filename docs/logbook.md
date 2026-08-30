@@ -295,3 +295,12 @@
   fixed-before-run statement), B-F6′ (boost.py line refs, F6→F7 attribution, stale scope
   bullet), B-F10 (sentinel-bin nit). No sign-off recorded yet — both are conditional on the
   above.
+
+- 2026-08-30 — Decision (user): re-review conditions **A-C3** (boundary list for out/metrics +
+  ledger, Shenzhen disclosure note in packet §7.2) and **B-F9** (cross-half patient_id
+  disjointness check) are SKIPPED for the Geneva-only 1.1.b run. Both remain formally listed by
+  the reviewers as sign-off conditions; the deviation must be agreed with them at sign-off or
+  the sign-off stays conditional. Both nodes are cut from one registry by one keyed hash
+  (prepare_geneva_halves.py), which is the informal basis for skipping F9. Revisit both at
+  Shenzhen integration (A-C3's disclosure point becomes load-bearing there).
+
