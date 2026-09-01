@@ -275,7 +275,7 @@ unblocking Phase v1.3.
 - [ ] Pick the primary label — one, not both: `mRS ≤ 2 at 3 months` or
   `in-hospital mortality`.
 - [ ] Freeze the aligned feature set. Lock
-  `registry_alignement/mappings/gva_to_shenzen.py` and `unit_conversions.py`.
+  `preprocessing/mappings/gva_to_shenzen.py` and `unit_conversions.py`.
   Publish `registry_alignement/FROZEN_FEATURES.md` naming every included
   variable, its Geneva source, its Shenzhen source, and its unit after
   conversion.

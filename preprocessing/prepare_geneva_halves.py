@@ -8,51 +8,25 @@ outcome, and deterministic under a fixed seed.
 
 Run from the repo root: `python preprocessing/prepare_geneva_halves.py`.
 """
+import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 SEED = 42
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from preprocessing.case_ids import build_case_admission_id  # noqa: E402
+from preprocessing.splits import stratified_patient_split  # noqa: E402
+
 SOURCE_XLSX = Path(
     "/mnt/hdd1/datasets/GVA_stroke_registry/stroke_registry_post_hoc_modified.xlsx"
 )
 OUT_DIR = REPO_ROOT / "out"
 FEATURE_COLS = ["Age (calc.)", "NIH on admission"]
 TARGET_COL = "3M Death"
-
-
-def build_case_admission_id(case_id: pd.Series) -> pd.Series:
-    """Mirror of task.py:71-80. `Case ID` is a 12-char string; middle 4 chars
-    are the patient ID, last 4 are the EDS admission suffix."""
-    patient_id = case_id.str[8:-4].astype(str)
-    eds_last_4 = case_id.str[-4:].astype(str).str.zfill(4)
-    return patient_id + "_" + eds_last_4
-
-
-def stratified_patient_split(df: pd.DataFrame, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """50/50 split at the patient level, stratified on TARGET_COL. Reduces
-    each patient to their max outcome to handle rare multi-admission patients
-    (same trick as task.py:41-47)."""
-    df = df.copy()
-    df["patient_id"] = df["case_admission_id"].str.split("_").str[0]
-
-    per_patient_outcome = df.groupby("patient_id")[TARGET_COL].max().reset_index()
-    pids = per_patient_outcome["patient_id"].tolist()
-    outcomes = per_patient_outcome[TARGET_COL].tolist()
-
-    pids_a, pids_b, _, _ = train_test_split(
-        pids,
-        outcomes,
-        stratify=outcomes,
-        test_size=0.5,
-        random_state=seed,
-    )
-    half_a = df[df["patient_id"].isin(pids_a)].drop(columns=["patient_id"])
-    half_b = df[df["patient_id"].isin(pids_b)].drop(columns=["patient_id"])
-    return half_a, half_b
 
 
 def summarize(name: str, df: pd.DataFrame) -> None:
@@ -84,7 +58,7 @@ def main() -> None:
         f"{n_post} unique cases remain."
     )
 
-    half_a, half_b = stratified_patient_split(df, seed=SEED)
+    half_a, half_b = stratified_patient_split(df, seed=SEED, target_col=TARGET_COL)
 
     pids_a = set(half_a["case_admission_id"].str.split("_").str[0])
     pids_b = set(half_b["case_admission_id"].str.split("_").str[0])

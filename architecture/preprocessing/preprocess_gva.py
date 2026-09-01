@@ -26,21 +26,28 @@ import pandas as pd
 _HERE = Path(__file__).resolve().parent
 ARCH_DIR = _HERE.parent
 REPO_ROOT = ARCH_DIR.parent
-# fed_stroke (frozen schema) + repo root (registry_alignement).
+# fed_stroke (frozen schema) + repo root (the shared `preprocessing` library).
 sys.path.insert(0, str(ARCH_DIR))
 sys.path.insert(0, str(REPO_ROOT))
-sys.path.insert(0, str(REPO_ROOT/ "registry_alignement"))
 
 from fed_stroke.schema import FEATURE_COLS, FEATURE_UNITS, TARGET_COL  # noqa: E402
-from registry_alignement import build_gva_first_values_table, build_gva_summary_table
-from registry_alignement.build_gva_first_values_table import (
-    load_concat_csvs,
-    extract_pv_vital_first_values,
-    extract_pv_lab_first_values,
-    extract_lab_dosage_first_values,
-    assemble_wide
+from preprocessing.case_ids import (  # noqa: E402
+    create_ehr_case_identification_column,
+    create_registry_case_identification_column,
 )
-from registry_alignement.geneva_preprocessing import utils
+from preprocessing.first_values import (  # noqa: E402
+    assemble_wide,
+    extract_lab_dosage_first_values,
+    extract_pv_lab_first_values,
+    extract_pv_vital_first_values,
+    load_concat_csvs,
+)
+from preprocessing.registry_cohort import (  # noqa: E402
+    build_cohort,
+    parse_yyyymmdd,
+    preprocess_features,
+    preprocess_outcome,
+)
 
 
 SCHEMA_VERSION = "frozen-v1"   # bump on any FEATURE_COLS/FEATURE_UNITS/TARGET_COL change
@@ -51,15 +58,16 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path) -> pd.DataFrame:
     """Registry + EHR → ONE tidy per-admission table in the frozen schema.
 
     Steps to populate (reuse, don't re-derive):
-    - cohort: registry_alignement.build_gva_summary_table.preprocess
-      (exact-duplicate rows dropped, 'Type of event' == 'Ischemic stroke');
+    - cohort: preprocessing.registry_cohort (exact-duplicate rows dropped,
+      'Type of event' == 'Ischemic stroke');
     - outcome: the OPSUM 3M Death / 3M mRS reconciliation already coded there;
-    - case_admission_id: preprocessing.prepare_geneva_halves.build_case_admission_id
+    - case_admission_id: preprocessing.case_ids
       (== the loader's patient_id + '_' + EDS-last-4 derivation, task.py);
-    - EHR features: registry_alignement.build_gva_first_values_table extraction,
-      joined on case_admission_id;
-    - unit-convert into FEATURE_UNITS (mappings.UNIT_CONVERSIONS), rename to the
-      frozen names (mappings.GVA_TO_FROZEN), then mappings.validate_frozen_columns.
+    - EHR features: preprocessing.first_values extraction, joined on
+      case_admission_id;
+    - unit-convert into FEATURE_UNITS (preprocessing.mappings.UNIT_CONVERSIONS),
+      rename to the frozen names (preprocessing.mappings.GVA_TO_FROZEN), then
+      preprocessing.mappings.validate_frozen_columns.
 
     Input:
         registry_xlsx: the Geneva stroke-registry export (.xlsx).
@@ -76,13 +84,13 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path) -> pd.DataFrame:
     """
     # preprocess registry
     df = pd.read_excel(registry_xlsx)
-    df, n_raw, n_filtered = build_gva_summary_table.build_cohort(df)
+    df, n_raw, n_filtered = build_cohort(df)
     # derive case_admission_id
-    df['case_admission_id'] = utils.create_registry_case_identification_column(df)
-    df = build_gva_summary_table.preprocess_outcome(df)
-    df = build_gva_summary_table.preprocess_features(df)
+    df['case_admission_id'] = create_registry_case_identification_column(df)
+    df = preprocess_outcome(df)
+    df = preprocess_features(df)
 
-    df["admission_date"] = build_gva_first_values_table.parse_yyyymmdd(df["Arrival at hospital"])
+    df["admission_date"] = parse_yyyymmdd(df["Arrival at hospital"])
 
     vitals_prefix = "patientvalue"
     lab_prefix = "lab"
@@ -90,12 +98,12 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path) -> pd.DataFrame:
 
     print(f"[load]   PV files ({vitals_prefix}*.csv) from {ehr_dir}")
     vitals_df = load_concat_csvs(ehr_dir, vitals_prefix)
-    vitals_df["case_admission_id"] = utils.create_ehr_case_identification_column(vitals_df)
+    vitals_df["case_admission_id"] = create_ehr_case_identification_column(vitals_df)
     print(f"[load]   PV rows={len(vitals_df)}")
 
     print(f"[load]   lab files ({lab_prefix}*.csv) from {ehr_dir}")
     lab_df = load_concat_csvs(ehr_dir, lab_prefix)
-    lab_df["case_admission_id"] = utils.create_ehr_case_identification_column(lab_df)
+    lab_df["case_admission_id"] = create_ehr_case_identification_column(lab_df)
     print(f"[load]   lab rows={len(lab_df)}")
 
     per_var: dict[str, pd.DataFrame] = {}

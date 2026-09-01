@@ -33,7 +33,7 @@ def split_patient_disjoint_halves(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Frozen table → (half_A, half_B), patient-level disjoint.
 
-    Reuse preprocessing.prepare_geneva_halves.stratified_patient_split
+    Reuse preprocessing.splits.stratified_patient_split
     (50/50 at the patient level, stratified on per-patient max outcome,
     deterministic under `seed` — re-runs must not move patients between
     nodes, or cross-run ledger composition per site breaks).

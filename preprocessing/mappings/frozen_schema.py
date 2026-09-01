@@ -14,8 +14,9 @@ Apply order in the site preprocessing (architecture/preprocessing/):
     → rename (this module)
     → validate_frozen_columns(...) — fail loudly on BOTH missing and stray columns.
 
-This module deliberately does NOT import fed_stroke (registry_alignement stays
-independent of the architecture layer); the caller passes the frozen names in.
+This module deliberately does NOT import fed_stroke (the preprocessing layer
+stays independent of the architecture layer); the caller passes the frozen
+names in.
 
 Freeze discipline: editing these dicts after the schema freeze is a cross-site
 contract change — bump fed_stroke SCHEMA_VERSION and re-obtain partner sign-off.

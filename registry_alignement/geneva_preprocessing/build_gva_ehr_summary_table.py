@@ -30,18 +30,17 @@ from pathlib import Path
 
 import pandas as pd
 
-_HERE = Path(__file__).resolve().parent
-for _p in (_HERE, _HERE.parent):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from registry_alignement.build_gva_summary_table import (
+from preprocessing.mappings import GVA_TO_SHENZEN, UNITS  # noqa: E402
+from registry_alignement.build_gva_summary_table import (  # noqa: E402
     STAT_FORMAT,
     detect_type,
     fmt_missing,
     summarize,
 )
-from registry_alignement.mappings import GVA_TO_SHENZEN, UNITS
 
 
 # Map each EHR first-value variable to the registry column it corresponds to,
