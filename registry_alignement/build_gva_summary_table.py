@@ -360,7 +360,7 @@ def summarize(series: pd.Series, vtype: str, n_total: int) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Preprocessing
 # ---------------------------------------------------------------------------
-def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
+def build_cohort(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     """Drop duplicates, filter to ischemic stroke, derive outcome variables."""
     n_raw = len(df)
 
@@ -388,6 +388,9 @@ def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
             print(f"[prep]  Case ID dedup: dropped {n_case_dedup_dropped} extra rows")
     n_filtered = len(df)
 
+    return df, n_raw, n_filtered
+
+def preprocess_outcome(df: pd.DataFrame) -> pd.DataFrame:
     # 3. Outcome preprocessing (OPSUM outcome_preprocessing, mutated in place).
     # Source: OPSUM/meta_data/geneva_stroke_unit_patient_characteristics.py
     if {"3M mRS", "3M Death", "Death in hospital"}.issubset(df.columns):
@@ -408,7 +411,9 @@ def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
             (df["3M mRS"] != 6) & df["3M mRS"].notna() & df["3M Death"].isna(),
             "3M Death",
         ] = "no"
+    return df
 
+def preprocess_features(df: pd.DataFrame) -> pd.DataFrame:
     # 4. Collapse TOAST "Unknown etiology" subtypes (with/despite evaluation)
     # into a single "Unknown etiology" bucket for the summary.
     if "Etiology TOAST" in df.columns:
@@ -419,7 +424,19 @@ def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
 
     # 5. Derive timing variables (ODT, ONT, DNT, DPT) in minutes.
     df = compute_timings(df)
+    return df
 
+def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
+    """Preprocess the Geneva stroke registry DataFrame for summary table.
+
+    Returns:
+        df: preprocessed DataFrame
+        n_raw: number of raw rows before preprocessing
+        n_filtered: number of rows after deduplication and filtering
+    """
+    df, n_raw, n_filtered = build_cohort(df)
+    df = preprocess_outcome(df)
+    df = preprocess_features(df)
     return df, n_raw, n_filtered
 
 

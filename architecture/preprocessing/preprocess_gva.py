@@ -1,13 +1,7 @@
 """GVA preprocessing: registry + EHR → the frozen-schema table the GVA node trains on.
 
-THE production preprocessing for the Geneva site (roadmap "Geneva preprocessing:
-EHR → tabular in the frozen schema"). Once Shenzhen joins (v1.3), the GVA
-SuperNode consumes this pipeline's single output parquet directly, exactly as
-Shenzhen's partner-run preprocessing produces theirs — one site, one table, one
-smoke report. The Geneva-only-phase split into two halves is a SIDE JOB layered
-on top (split_gva_halves.py), not part of this pipeline.
 
-Contract with the architecture layer (do NOT do the loader's job here):
+Contract with the architecture layer:
 - one row per case_admission_id; columns EXACTLY
   ['case_admission_id', *FEATURE_COLS, TARGET_COL] — no PII, no extras;
 - values IN the schema's units of record (FEATURE_UNITS);
@@ -15,17 +9,11 @@ Contract with the architecture layer (do NOT do the loader's job here):
 - NO one-row-per-patient dedup, NO train/valid split, NO sentinel encoding —
   R3/R4 and the sentinel are loader-side (task.py) and accountant-reviewed there;
 - target is {0, 1} int (the R7 gate requires exactly binary labels);
-- nothing data-derived becomes public config (feature ranges for the DP bins
-  live in dp/boost.FEATURE_RANGES and must be clinically fixed, never fitted).
-
-Builds on registry_alignement/ (cohort selection + OPSUM outcome rules in
-build_gva_summary_table, EHR first-values in build_gva_first_values_table,
-unit conversions + frozen-name mapping + column validation in mappings/).
 
 Usage:
     python architecture/preprocessing/preprocess_gva.py \
-        --registry /mnt/hdd1/datasets/GVA_stroke_registry/stroke_registry_post_hoc_modified.xlsx \
-        --ehr-dir  /mnt/hdd1/datasets/GVA_stroke_registry/Extraction_YYYYMMDD \
+        --registry /.../stroke_registry_post_hoc_modified.xlsx \
+        --ehr-dir  /.../Extraction_YYYYMMDD \
         --out      out/gva_frozen.parquet
 """
 from __future__ import annotations
@@ -33,7 +21,6 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-
 import pandas as pd
 
 _HERE = Path(__file__).resolve().parent
@@ -42,8 +29,19 @@ REPO_ROOT = ARCH_DIR.parent
 # fed_stroke (frozen schema) + repo root (registry_alignement).
 sys.path.insert(0, str(ARCH_DIR))
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT/ "registry_alignement"))
 
 from fed_stroke.schema import FEATURE_COLS, FEATURE_UNITS, TARGET_COL  # noqa: E402
+from registry_alignement import build_gva_first_values_table, build_gva_summary_table
+from registry_alignement.build_gva_first_values_table import (
+    load_concat_csvs,
+    extract_pv_vital_first_values,
+    extract_pv_lab_first_values,
+    extract_lab_dosage_first_values,
+    assemble_wide
+)
+from registry_alignement.geneva_preprocessing import utils
+
 
 SCHEMA_VERSION = "frozen-v1"   # bump on any FEATURE_COLS/FEATURE_UNITS/TARGET_COL change
 PROVENANCE = "real-frozen-schema"
@@ -76,7 +74,38 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path) -> pd.DataFrame:
         - target: int in {0, 1}; rows with underivable outcome dropped
           (count reported via the summary).
     """
-    raise NotImplementedError
+    # preprocess registry
+    df = pd.read_excel(registry_xlsx)
+    df, n_raw, n_filtered = build_gva_summary_table.build_cohort(df)
+    # derive case_admission_id
+    df['case_admission_id'] = utils.create_registry_case_identification_column(df)
+    df = build_gva_summary_table.preprocess_outcome(df)
+    df = build_gva_summary_table.preprocess_features(df)
+
+    df["admission_date"] = build_gva_first_values_table.parse_yyyymmdd(df["Arrival at hospital"])
+
+    vitals_prefix = "patientvalue"
+    lab_prefix = "lab"
+    print(f"[df] n_patients={len(df)}")
+
+    print(f"[load]   PV files ({vitals_prefix}*.csv) from {ehr_dir}")
+    vitals_df = load_concat_csvs(ehr_dir, vitals_prefix)
+    vitals_df["case_admission_id"] = utils.create_ehr_case_identification_column(vitals_df)
+    print(f"[load]   PV rows={len(vitals_df)}")
+
+    print(f"[load]   lab files ({lab_prefix}*.csv) from {ehr_dir}")
+    lab_df = load_concat_csvs(ehr_dir, lab_prefix)
+    lab_df["case_admission_id"] = utils.create_ehr_case_identification_column(lab_df)
+    print(f"[load]   lab rows={len(lab_df)}")
+
+    per_var: dict[str, pd.DataFrame] = {}
+    per_var.update(extract_pv_vital_first_values(vitals_df, df))
+    per_var.update(extract_pv_lab_first_values(vitals_df, df))
+    per_var.update(extract_lab_dosage_first_values(lab_df, df))
+
+    wide_df = assemble_wide(df, per_var)
+
+    return wide_df
 
 
 def write_node_parquet(df: pd.DataFrame, out_path: Path,
