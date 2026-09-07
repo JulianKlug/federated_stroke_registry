@@ -5,6 +5,7 @@ pythonpath=["."] puts architecture/ on sys.path (fed_stroke); the repo root give
 `preprocessing` package (a regular package, so it wins over the architecture/preprocessing
 namespace dir whatever the path order); architecture/preprocessing/ gives preprocess_gva.
 """
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -578,6 +579,101 @@ def test_assemble_and_write_build_log(tmp_path):
     assert "total nulled: 0 values across 0 features; 41 features untouched" in text
     path = write_build_log(tmp_path / "nested" / "gva_frozen.build.log", text)
     assert path.read_text(encoding="utf-8") == text
+
+
+# ---------------------------------------------------------------- node parquet + smoke report
+
+def _frozen_with_build_attrs():
+    out = preprocess_gva.wide_to_frozen(_fake_wide_df())
+    out.attrs["exclusions"] = []
+    record_exclusion(out.attrs["exclusions"], "stage A", "reason A",
+                     pd.DataFrame({ID: ["p1_1", "p2_1"]}), pd.DataFrame({ID: ["p1_1"]}))
+    out.attrs["build_log_path"] = "out/x.build.log"
+    return out
+
+
+def test_write_node_parquet_roundtrip_stamp_and_smoke_report(tmp_path):
+    out = _frozen_with_build_attrs()
+    path = tmp_path / "gva_frozen.parquet"
+    hashes = {"registry/r.xlsx": "ab" * 32, "ehr/patientvalue_1.csv": "cd" * 32}
+    report = preprocess_gva.write_node_parquet(out, path, source_files=hashes)
+
+    # the parquet IS the frame (values, dtypes, order); pandas even keeps the attrs
+    back = pd.read_parquet(path)
+    assert back.columns.tolist() == [ID, *FROZEN_FEATURES, *FROZEN_OUTCOMES]
+    pd.testing.assert_frame_equal(back, out)
+    assert back.attrs["unit_check"]["pass"] is True
+
+    # provenance stamp in the key-value metadata
+    meta = preprocess_gva.read_node_metadata(path)
+    assert meta["schema_version"] == preprocess_gva.SCHEMA_VERSION == report["schema_version"]
+    assert meta["provenance"] == "real-frozen-schema" == report["provenance"]
+    assert meta["source_files"] == hashes == report["source_files"]
+    assert meta["feature_cols"] == FROZEN_FEATURES and meta["outcome_cols"] == FROZEN_OUTCOMES
+    assert meta["n_rows"] == 5 and meta["created"] == report["created"]
+
+    # smoke report: written next to the parquet, identical to the returned dict, aggregate-only
+    rp = tmp_path / "gva_frozen_smoke_report.json"
+    assert report["smoke_report_path"] == str(rp) and report["node_file"] == "gva_frozen.parquet"
+    assert json.loads(rp.read_text(encoding="utf-8")) == report
+    assert (report["n_rows"], report["n_patients"], report["n_features"], report["n_outcomes"]) == (5, 5, 41, 3)
+    assert report["outcomes"]["death_3m"] == {"n_recorded": 4, "n_missing": 1, "missing_rate": 0.2,
+                                              "n_positive": 2, "positive_rate": 0.5}
+    assert report["outcomes"]["mrs_3m"]["median"] == 2.0
+    f = report["features"]["d_dimer"]
+    assert set(f) == {"n_recorded", "missing_rate", "median", "min", "max"}
+    assert f["n_recorded"] == 4 and f["missing_rate"] == 0.2 and f["max"] >= 500.0
+    assert report["features"]["age"]["n_recorded"] == 5                # registry numerics: no NaN in the fixture
+    assert report["unit_check"]["pass"] is True and report["unit_check"]["n_columns_checked"] == 27
+    assert report["out_of_range"] == {"pass": True, "n_nulled_total": 0, "max_out_of_range_frac": 0.25,
+                                      "nulled": {}}
+    assert report["exclusions"][0]["stage"] == "stage A" and report["build_log"] == "out/x.build.log"
+    text = json.dumps(report)
+    assert "p0_0000" not in text and "Doe" not in text                 # never an id, never a raw value
+
+
+def test_write_node_parquet_rejects_contract_violations_before_writing(tmp_path):
+    out = preprocess_gva.wide_to_frozen(_fake_wide_df())
+    with pytest.raises(ValueError, match=r"missing=\['d_dimer'\]"):
+        preprocess_gva.write_node_parquet(out.drop(columns=["d_dimer"]), tmp_path / "a.parquet", {})
+    with pytest.raises(ValueError, match="ORDER"):
+        preprocess_gva.write_node_parquet(out[[ID, *FROZEN_OUTCOMES, *FROZEN_FEATURES]],
+                                          tmp_path / "b.parquet", {})
+    dup = out.copy()
+    dup.loc[1, ID] = dup.loc[0, ID]
+    with pytest.raises(ValueError, match="unique"):
+        preprocess_gva.write_node_parquet(dup, tmp_path / "c.parquet", {})
+    ints = out.copy()
+    ints["IVT"] = ints["IVT"].astype("int64")
+    with pytest.raises(ValueError, match=r"float64.*IVT"):
+        preprocess_gva.write_node_parquet(ints, tmp_path / "d.parquet", {})
+    assert not list(tmp_path.iterdir())                                # nothing written on failure
+
+
+def test_write_node_parquet_without_build_attrs(tmp_path):
+    bare = preprocess_gva.wide_to_frozen(_fake_wide_df()).copy()
+    bare.attrs = {}                                                    # e.g. a frame assembled elsewhere
+    report = preprocess_gva.write_node_parquet(bare, tmp_path / "half.parquet", {})
+    assert report["unit_check"]["pass"] is None and "not available" in report["unit_check"]["note"]
+    assert report["out_of_range"]["pass"] is None
+    assert report["exclusions"] is None and report["build_log"] is None
+    assert (tmp_path / "half_smoke_report.json").exists()
+    assert preprocess_gva.read_node_metadata(tmp_path / "half.parquet")["source_files"] == {}
+
+
+def test_hash_inputs_selects_exactly_the_files_the_build_reads(tmp_path):
+    reg = tmp_path / "registry.xlsx"
+    reg.write_bytes(b"registry")
+    ehr = tmp_path / "ehr"
+    ehr.mkdir()
+    (ehr / "patientvalue_1.csv").write_bytes(b"pv")
+    (ehr / "lab_1.csv").write_bytes(b"lab")
+    (ehr / "notes.txt").write_bytes(b"x")                              # not an input
+    (ehr / "patientvalue_old.csv.bak").write_bytes(b"y")               # not an input
+    hashes = preprocess_gva.hash_inputs(reg, ehr)
+    assert set(hashes) == {"registry/registry.xlsx", "ehr/patientvalue_1.csv", "ehr/lab_1.csv"}
+    assert hashes["registry/registry.xlsx"] == hashlib.sha256(b"registry").hexdigest()
+    assert hashes["ehr/lab_1.csv"] == hashlib.sha256(b"lab").hexdigest()
 
 
 # ---------------------------------------------------------------- end to end
