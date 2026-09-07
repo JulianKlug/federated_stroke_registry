@@ -9,6 +9,7 @@ from fed_stroke.dp import (
     validate_dp_preconditions,
 )
 from fed_stroke.dp import boost as B
+from fed_stroke.dp.synthetic import background_matrix
 
 pytestmark = pytest.mark.filterwarnings("ignore:Optimal RDP order")
 
@@ -18,12 +19,12 @@ DELTA = 1e-5
 def _valid_inputs(n=50, mechanism_name="gaussian"):
     """A complete, gate-passing input set; tests mutate ONE condition each."""
     rng = np.random.default_rng(0)
-    X = np.column_stack([rng.uniform(0, 120, n), rng.uniform(0, 42, n)])
+    X = background_matrix(n, seed=0)          # every frozen column inside its public range
     y = rng.integers(0, 2, n).astype(float)
     pids = np.array([f"P{i:04d}" for i in range(n)])
     dp = DPConfig(enabled=True, mechanism=mechanism_name, target_epsilon=5.0, delta=DELTA)
     boost = BoostParams(max_depth=4, num_boost_round=20, base_score=0.5, seed=0)
-    mechanism = make_mechanism(dp, boost, 2)
+    mechanism = make_mechanism(dp, boost, X.shape[1])
     params = {"max_depth": 4, "base_score": 0.5, "seed": 0}
     return dict(X=X, y=y, patient_ids=pids, dp=dp, params=params, mechanism=mechanism,
                 global_round=1, num_rounds=20)
@@ -85,19 +86,20 @@ def test_gate_rejects_non_fixed_range_bins_and_feature_mismatch():
     with pytest.raises(ValueError, match="fixed_range"):
         validate_dp_preconditions(**kw)
     kw = _valid_inputs()
-    kw["X"] = kw["X"][:, :1]                # frozen-schema width drift
+    kw["X"] = kw["X"][:, :-1]               # frozen-schema width drift (one column short)
     with pytest.raises(ValueError, match="columns"):
         validate_dp_preconditions(**kw)
 
 
 def test_gate_rejects_nonfinite_feature_ranges_and_bad_clip():
     kw = _valid_inputs()
-    kw["feature_ranges"] = {"Age (calc.)": (0.0, np.inf), "NIH on admission": (0.0, 42.0)}
+    kw["feature_ranges"] = {**B.FEATURE_RANGES, "age": (0.0, np.inf)}
     with pytest.raises(ValueError, match="bin edges"):
         validate_dp_preconditions(**kw)
     kw = _valid_inputs()
     kw["dp"] = DPConfig(enabled=True, target_epsilon=5.0, delta=DELTA, clip_bound=0.0)
-    kw["mechanism"] = make_mechanism(kw["dp"], BoostParams(max_depth=4, num_boost_round=20), 2)
+    kw["mechanism"] = make_mechanism(kw["dp"], BoostParams(max_depth=4, num_boost_round=20),
+                                     len(B.FEATURE_RANGES))
     with pytest.raises(ValueError, match="clip_bound"):
         validate_dp_preconditions(**kw)
 

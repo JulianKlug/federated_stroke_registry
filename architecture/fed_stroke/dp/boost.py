@@ -32,7 +32,7 @@ from fed_stroke.dp.accounting import (
     account_run_laplace,
     noise_multiplier_for_epsilon,
 )
-from fed_stroke.schema import MISSING_SENTINEL
+from fed_stroke.schema import FEATURE_COLS, MISSING_SENTINEL, is_binary_feature
 
 # Auto-detect marker written into every serialized DPBooster payload (§4.1/§4.8). The offline
 # loader (eval_final_model.py) sniffs this to route a model file to from_json_bytes vs XGBoost.
@@ -41,7 +41,12 @@ from fed_stroke.schema import MISSING_SENTINEL
 # were trained with — the version bump makes stale v1 artifacts fail LOUDLY at load instead of
 # silently predicting through shifted bins. All v1 artifacts predate the 1.1.a″ remediation
 # (public-seeded noise, non-deduped cohort) and must not be scored anyway.
-DP_MODEL_FORMAT = "dp-gbdt-v2"
+# v3 (2026-09-04): the frozen schema grew 2 → 41 features (fed_stroke.schema, FEATURE_RANGES
+# below). A v2 artifact's stored 2-entry feature_ranges + integer tree feature indices are only
+# interpretable against the OLD column order; scored on 41-column X it would silently read
+# column 1 (sex) as NIHSS. The bump (plus the width check in _binize) makes v2 artifacts fail
+# LOUDLY at load. No v2 artifact was ever trained on frozen-schema data.
+DP_MODEL_FORMAT = "dp-gbdt-v3"
 
 # Sensitivity constants (§3.2). L2 drives the Gaussian arm, L1 the Laplace arm.
 # For binary:logistic, per-example g = p − y ∈ [−1, 1] and h = p(1−p) ∈ (0, 0.25], so
@@ -54,10 +59,64 @@ H_L1_PER_FEATURE = 0.25     # per-feature L1                          (Laplace)
 DENOM_FLOOR = 1e-3          # min positive (H+λ) after noise, so gain never divides by <=0 (§3.3/§8.3)
 
 # Public, data-INDEPENDENT clinical ranges -> DP-safe fixed bin edges (§3.7). ONE home; imported
-# (never redefined) by fed_stroke.dp.synthetic. Keyed to the frozen FEATURE_COLS. These stay the
-# REAL clinical ranges — the missing-sentinel bin is reserved structurally by fixed_bin_edges
-# (REMOVE-IF-NO-DP), never by widening these values.
-FEATURE_RANGES = {"Age (calc.)": (0.0, 120.0), "NIH on admission": (0.0, 42.0)}
+# (never redefined) by fed_stroke.dp.synthetic. Keyed to the frozen FEATURE_COLS — SAME keys in
+# the SAME order (asserted below: column j of X == FEATURE_COLS[j] == the j-th edge array), and
+# expressed in fed_stroke.schema.FEATURE_UNITS. These stay the REAL clinical ranges — the
+# missing-sentinel bin is reserved structurally by fixed_bin_edges (REMOVE-IF-NO-DP), never by
+# widening these values. Every lower bound must exceed MISSING_SENTINEL (-1.0); a value BELOW
+# its lower bound bins into the sentinel bin, which is why out-of-range cleaning belongs in the
+# site preprocessing, not here. Binaries are (0, 1).
+
+FEATURE_RANGES = {
+    "age": (0.0, 120.0),                        # years
+    "sex": (0.0, 1.0),                          # binary (1 = female)
+    "wake_up_stroke": (0.0, 1.0),               # binary
+    "pre_stroke_mrs": (0.0, 5.0),               # mRS 0-5 (6 = dead is impossible pre-stroke)
+    "temperature": (25.0, 45.0),                # °C
+    "heart_rate": (0.0, 300.0),                 # bpm
+    "respiratory_rate": (0.0, 100.0),           # /min
+    "systolic_blood_pressure": (0.0, 300.0),    # mmHg
+    "diastolic_blood_pressure": (0.0, 200.0),   # mmHg
+    "NIHSS": (0.0, 42.0),                       # points
+    "glucose": (0.0, 60.0),                     # mmol/L
+    "GCS": (3.0, 15.0),                         # points
+    "white_blood_cell_count": (0.0, 100.0),     # G/l
+    "neutrophil_count": (0.0, 100.0),           # G/l
+    "lymphocyte_count": (0.0, 50.0),            # G/l
+    "CRP": (0.0, 600.0),                        # mg/l
+    "INR": (0.0, 20.0),                         # ratio
+    "fibrinogen": (0.0, 20.0),                  # g/l
+    "d_dimer": (0.0, 100000.0),                  # ng/ml
+    "hba1c": (0.0, 20.0),                       # %
+    "alt": (0.0, 50000.0),                       # U/l
+    "LDL": (0.0, 15.0),                         # mmol/l
+    "creatinine": (0.0, 3000.0),                # µmol/l
+    "urea": (0.0, 200.0),                       # mmol/l
+    "med_hist_stroke": (0.0, 1.0),              # binary
+    "med_hist_tia": (0.0, 1.0),                 # binary
+    "med_hist_ich": (0.0, 1.0),                 # binary
+    "med_hist_hta": (0.0, 1.0),                 # binary
+    "med_hist_diabetes": (0.0, 1.0),            # binary
+    "med_hist_hyperlipidemia": (0.0, 1.0),      # binary
+    "med_hist_af": (0.0, 1.0),                  # binary
+    "med_hist_coronary_heart_disease": (0.0, 1.0),     # binary
+    "med_hist_valv_heart_disease": (0.0, 1.0),         # binary
+    "med_hist_peripheral_artery_disease": (0.0, 1.0),  # binary
+    "med_hist_smoking": (0.0, 1.0),             # binary
+    "ODT": (0.0, 10080.0),                       # min — onset-to-door, capped at 7d
+    "ONT": (0.0, 2880.0),                       # min — onset-to-needle, capped at 48 h
+    "DNT": (0.0, 10080.0),                        # min — door-to-needle, capped at 7d
+    "OPT": (0.0, 2880.0),                       # min — onset-to-puncture, capped at 48 h
+    "IVT": (0.0, 1.0),                          # binary
+    "EVT": (0.0, 1.0),                          # binary
+}
+assert list(FEATURE_RANGES) == list(FEATURE_COLS), \
+    "FEATURE_RANGES must mirror fed_stroke.schema.FEATURE_COLS — same keys, same ORDER"
+for _name, (_lo, _hi) in FEATURE_RANGES.items():
+    assert MISSING_SENTINEL < _lo < _hi, f"FEATURE_RANGES[{_name!r}]: need sentinel < lo < hi"
+    assert not is_binary_feature(_name) or (_lo, _hi) == (0.0, 1.0), \
+        f"FEATURE_RANGES[{_name!r}]: binary features are (0, 1)"
+del _name, _lo, _hi
 
 
 # ------------------------------------------------------------------------ config
@@ -204,7 +263,16 @@ def quantile_bin_edges(X: np.ndarray, max_bins: int) -> list[np.ndarray]:
 
 
 def _binize(X: np.ndarray, edges: list[np.ndarray], max_bins: int) -> np.ndarray:
-    """Map each column to an integer bin index in [0, max_bins-1] using its edges."""
+    """Map each column to an integer bin index in [0, max_bins-1] using its edges.
+
+    Fails loudly on a width mismatch: an edge grid built for a different feature set (a stale
+    artifact from before the 41-feature freeze, or schema drift) must never silently bin the
+    first len(edges) columns and leave the rest uninitialised."""
+    if X.shape[1] != len(edges):
+        raise ValueError(
+            f"_binize: X has {X.shape[1]} columns but {len(edges)} edge arrays — the bin grid "
+            f"was built for a different feature set (stale model artifact or schema drift)."
+        )
     out = np.empty(X.shape, dtype=np.int64)
     for j, e in enumerate(edges):
         # interior edges e[1:-1]; searchsorted -> bin index, clipped into range.

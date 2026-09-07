@@ -22,7 +22,14 @@ from fed_stroke.dp import (
 )
 from fed_stroke.dp import accounting as A
 from fed_stroke.dp import boost as B
-from fed_stroke.dp.synthetic import make_synthetic_site, synthetic_train_valid
+from fed_stroke.dp.synthetic import (
+    AGE_IDX,
+    NIHSS_IDX,
+    assemble_site_matrix,
+    make_synthetic_site,
+    synthetic_train_valid,
+)
+from fed_stroke.schema import FEATURE_COLS
 from fed_stroke.task import replace_keys
 
 pytestmark = pytest.mark.filterwarnings("ignore:Optimal RDP order")
@@ -32,13 +39,25 @@ DEMO_BOOST = BoostParams(max_depth=3, num_boost_round=20, eta=0.1,
                          min_child_weight=5.0, base_score=0.5, seed=0)
 
 
-def _fit_auc(eps, seed, n=1000, boost=None):
-    """Train one arm (eps=None -> noise off) and return valid AUC."""
+# The two signal columns with their own public ranges: the pre-freeze d=2 setting, kept as the
+# mechanism-level sanity harness (see test_dp_auc_monotonicity for why).
+SIGNAL_RANGES = {"age": B.FEATURE_RANGES["age"], "NIHSS": B.FEATURE_RANGES["NIHSS"]}
+
+
+def _fit_auc(eps, seed, n=1000, boost=None, signal_only=False):
+    """Train one arm (eps=None -> noise off) and return valid AUC.
+
+    Default: the full frozen schema (d = len(FEATURE_RANGES)). signal_only=True: the two signal
+    columns only, with SIGNAL_RANGES passed explicitly (d = 2)."""
     boost = boost or DEMO_BOOST
     X, y = make_synthetic_site(n=n, seed=seed)
+    fr = None
+    if signal_only:
+        X = X[:, [AGE_IDX, NIHSS_IDX]]
+        fr = SIGNAL_RANGES
     X_tr, X_va, y_tr, y_va = synthetic_train_valid(X, y, seed=42)
     dp = DPConfig(enabled=eps is not None, target_epsilon=(eps if eps is not None else 5.0))
-    b = train_dp_gbdt(X_tr, y_tr, boost, dp, rng=np.random.default_rng(seed))
+    b = train_dp_gbdt(X_tr, y_tr, boost, dp, rng=np.random.default_rng(seed), feature_ranges=fr)
     return roc_auc_score(y_va, b.predict(X_va))
 
 
@@ -56,12 +75,14 @@ def test_gradient_hessian_bounds():
 
 
 def test_histogram_sensitivity_bound():
-    """Adding one record changes exactly ONE bin per feature; |ΔG| ≤ 1, |ΔH| ≤ 0.25 (§3.2)."""
+    """Adding one record changes exactly ONE bin per feature; |ΔG| ≤ 1, |ΔH| ≤ 0.25 (§3.2).
+    Runs over the FULL frozen schema (d = len(FEATURE_RANGES)): every column of the appended
+    record sits inside its public range, so it lands in exactly one real bin per feature."""
     max_bins = 16
     edges = B.fixed_bin_edges(B.FEATURE_RANGES, max_bins)
     rng = np.random.default_rng(1)
-    n, d = 200, 2
-    X = np.column_stack([rng.uniform(40, 90, n), rng.uniform(0, 30, n)])
+    n, d = 200, len(B.FEATURE_RANGES)
+    X = assemble_site_matrix(rng.uniform(40, 90, n), rng.uniform(0, 30, n), seed=1)
     g = rng.uniform(-1, 1, n)
     h = rng.uniform(0, 0.25, n)
 
@@ -74,8 +95,8 @@ def test_histogram_sensitivity_bound():
         return G, H
 
     G0, H0 = hist(X, g, h)
-    # append one extra record with the maximal-magnitude contribution
-    x_new = np.array([[65.0, 15.0]])
+    # append one extra record with the maximal-magnitude contribution (every column in range)
+    x_new = assemble_site_matrix([65.0], [15.0], seed=2)
     g_new, h_new = np.array([1.0]), np.array([0.25])
     G1, H1 = hist(np.vstack([X, x_new]), np.append(g, g_new), np.append(h, h_new))
 
@@ -110,7 +131,7 @@ def test_gaussian_epsilon_uses_release_count():
     boost = DEMO_BOOST
     sigma = 4.0
     dp = DPConfig(enabled=True, mechanism="gaussian", noise_multiplier=sigma, delta=DELTA)
-    mech = make_mechanism(dp, boost, num_features=2)
+    mech = make_mechanism(dp, boost, num_features=len(B.FEATURE_RANGES))
     n_rel = num_gaussian_releases(boost)              # = 2·D·T = 120
     assert mech.num_releases == n_rel
     assert mech.reported_epsilon == pytest.approx(A.account_run(n_rel, sigma, 1.0, DELTA))
@@ -136,7 +157,7 @@ def test_epsilon_independent_of_clip_bound():
     for c in (0.1, 1.0, 10.0):
         dp = DPConfig(enabled=True, mechanism="gaussian", noise_multiplier=3.0,
                       clip_bound=c, delta=DELTA)
-        eps.append(make_mechanism(dp, boost, num_features=2).reported_epsilon)
+        eps.append(make_mechanism(dp, boost, num_features=len(B.FEATURE_RANGES)).reported_epsilon)
     assert eps[0] == pytest.approx(eps[1]) == pytest.approx(eps[2])
 
 
@@ -164,7 +185,7 @@ def test_noise_multiplier_monotonic_in_epsilon():
     sig = []
     for e in (1, 3, 5, 10):
         dp = DPConfig(enabled=True, mechanism="gaussian", target_epsilon=e, delta=DELTA)
-        sig.append(make_mechanism(dp, boost, num_features=2).noise_multiplier)
+        sig.append(make_mechanism(dp, boost, num_features=len(B.FEATURE_RANGES)).noise_multiplier)
     assert all(sig[i] > sig[i + 1] for i in range(len(sig) - 1))
 
 
@@ -192,11 +213,20 @@ def test_dp_auc_monotonicity():
     """Averaged over seeds (single-seed DP AUC is high-variance): no-noise ≳ high-ε ≫ low-ε.
     ε spans the noise-floor transition — at n≈1000 ε=1 is ~chance while ε=100 ≈ no-noise (§7.2).
     Asserting the ε=5≥ε=1 ordering directly would live below the noise floor, so this pins the
-    robust ends instead."""
+    robust ends instead.
+
+    Pinned on the TWO signal columns (d=2, SIGNAL_RANGES): this is a MECHANISM sanity check. On
+    the full frozen schema (d=41, 2026-09-04 freeze) the same harness puts even ε=100 at chance
+    (AUC ≈ 0.49 at ε=100 and ε=10, ≈ 0.52 at ε=1, ≈ 0.74 without noise; 8-seed means, n=1000,
+    2026-09-04): per-bin noise grows √(41/2) ≈ 4.5×
+    at identical ε, and 39 extra noised histograms hand the split search spurious low-hessian
+    bins. That is a real utility finding about DP-GBDT at this n and d, not a learner bug (the
+    no-noise arm still tracks XGBoost on d=41, test_no_noise_equals_reasonable_baseline) — it
+    belongs in the 1.1.b sweep design, not hidden behind a loosened threshold here."""
     seeds = range(8)
-    a_off = np.mean([_fit_auc(None, s) for s in seeds])
-    a_lo = np.mean([_fit_auc(1, s) for s in seeds])
-    a_hi = np.mean([_fit_auc(100, s) for s in seeds])
+    a_off = np.mean([_fit_auc(None, s, signal_only=True) for s in seeds])
+    a_lo = np.mean([_fit_auc(1, s, signal_only=True) for s in seeds])
+    a_hi = np.mean([_fit_auc(100, s, signal_only=True) for s in seeds])
     assert a_hi > a_lo + 0.08          # erosion is real across the transition
     assert a_off > a_lo + 0.08         # privacy at tight ε has a real utility cost
     assert a_off >= a_hi - 0.05        # no-noise is at least as good as loose-ε (within variance)
@@ -221,8 +251,11 @@ def test_fixed_bin_edges_data_independent():
     e2 = B.fixed_bin_edges(B.FEATURE_RANGES, 32)
     for a, b in zip(e1, e2):
         assert np.array_equal(a, b)
-    assert np.array_equal(e1[0], np.concatenate(([MISSING_SENTINEL], np.linspace(0.0, 120.0, 32))))
-    assert np.array_equal(e1[1], np.concatenate(([MISSING_SENTINEL], np.linspace(0.0, 42.0, 32))))
+    assert len(e1) == len(B.FEATURE_RANGES) == len(FEATURE_COLS)   # one edge array per frozen column
+    assert np.array_equal(e1[FEATURE_COLS.index("age")],
+                          np.concatenate(([MISSING_SENTINEL], np.linspace(0.0, 120.0, 32))))
+    assert np.array_equal(e1[FEATURE_COLS.index("NIHSS")],
+                          np.concatenate(([MISSING_SENTINEL], np.linspace(0.0, 42.0, 32))))
     assert all(len(e) == 33 for e in e1)          # max_bins + 1 edges -> max_bins bins
     # A range that cannot separate missing from real fails loudly.
     with pytest.raises(ValueError, match="sentinel"):
@@ -236,17 +269,26 @@ def test_missing_sentinel_bin_separation():
     fallthrough silently binned NaN into the TOP bin instead)."""
     from fed_stroke.schema import MISSING_SENTINEL
 
+    d = len(B.FEATURE_RANGES)
+    lo = np.array([lo for lo, _ in B.FEATURE_RANGES.values()])
+    hi = np.array([hi for _, hi in B.FEATURE_RANGES.values()])
+    real_but_missing_nihss = (lo + hi) / 2                    # mid-range everywhere ...
+    real_but_missing_nihss[NIHSS_IDX] = MISSING_SENTINEL      # ... except NIHSS missing
     for max_bins in (4, 8, 32, 64):
         edges = B.fixed_bin_edges(B.FEATURE_RANGES, max_bins)
-        X = np.array([[MISSING_SENTINEL, MISSING_SENTINEL],   # missing both
-                      [0.0, 0.0],                             # exact lower bounds
-                      [120.0, 42.0],                          # exact upper bounds
-                      [65.0, MISSING_SENTINEL]])              # real age, missing NIHSS
+        X = np.vstack([np.full(d, MISSING_SENTINEL),          # missing everywhere
+                       lo,                                    # exact lower bounds
+                       hi,                                    # exact upper bounds
+                       real_but_missing_nihss])
         binned = B._binize(X, edges, max_bins)
-        assert np.array_equal(binned[0], [0, 0])              # sentinel -> reserved bin 0
-        assert np.array_equal(binned[1], [1, 1])              # lo -> first REAL bin
-        assert np.array_equal(binned[2], [max_bins - 1, max_bins - 1])
-        assert binned[3, 0] >= 1 and binned[3, 1] == 0        # per-feature independence
+        assert np.array_equal(binned[0], np.zeros(d, dtype=int))          # sentinel -> reserved bin 0
+        assert np.array_equal(binned[1], np.ones(d, dtype=int))           # lo -> first REAL bin
+        assert np.array_equal(binned[2], np.full(d, max_bins - 1))
+        assert binned[3, NIHSS_IDX] == 0                                  # per-feature independence
+        assert (np.delete(binned[3], NIHSS_IDX) >= 1).all()
+    # a bin grid for a different feature set must fail loudly, never bin a prefix of the columns
+    with pytest.raises(ValueError, match="columns"):
+        B._binize(X[:, :2], B.fixed_bin_edges(B.FEATURE_RANGES, 8), 8)
 
 
 def test_dp_mode_rejects_quantile_bins():

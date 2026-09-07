@@ -18,6 +18,9 @@ import pandas as pd
 import pytest
 import xgboost as xgb
 
+from fed_stroke.dp.synthetic import assemble_site_frame
+from fed_stroke.schema import FEATURE_COLS, TARGET_COL
+
 ARCH_DIR = Path(__file__).resolve().parent.parent
 CLI = ARCH_DIR / "scripts" / "check_fed_vs_pooled.py"
 
@@ -37,10 +40,8 @@ def _half_df(prefix, seed, n=80, single_class=False):
     else:
         logits = 0.08 * (age - 65) + 0.15 * (nih - 15) + rng.normal(0, 1, n)
         y = (logits > np.quantile(logits, 0.6)).astype(int)
-    return pd.DataFrame({
-        "case_admission_id": [f"{prefix}{i}_1" for i in range(n)],
-        "Age (calc.)": age, "NIH on admission": nih, "3M Death": y,
-    })
+    # full frozen schema (imported, not hand-copied, so the next freeze cannot silently rot this)
+    return assemble_site_frame([f"{prefix}{i}_1" for i in range(n)], age, nih, y, seed=seed)
 
 
 def _write_halves(tmp_path, b_single_class=False):
@@ -52,7 +53,7 @@ def _write_halves(tmp_path, b_single_class=False):
 
 
 def _dmatrix(df):
-    return xgb.DMatrix(df[["Age (calc.)", "NIH on admission"]], label=df["3M Death"])
+    return xgb.DMatrix(df[FEATURE_COLS], label=df[TARGET_COL])
 
 
 def _save_model(path, df, rounds, stamp_params=None, stamp_trees=None,
@@ -60,7 +61,7 @@ def _save_model(path, df, rounds, stamp_params=None, stamp_trees=None,
     """Train a booster on `df` and save it, optionally stamping fed_run_config."""
     if shuffle_labels:
         df = df.copy()
-        df["3M Death"] = np.random.RandomState(99).permutation(df["3M Death"].values)
+        df[TARGET_COL] = np.random.RandomState(99).permutation(df[TARGET_COL].values)
     bst = xgb.train({**BASE_PARAMS, "seed": seed}, _dmatrix(df), num_boost_round=rounds)
     if stamp_params is not None:
         bst.set_attr(fed_run_config=json.dumps(

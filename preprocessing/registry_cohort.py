@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from .build_log import record_exclusion
+
 
 def parse_yyyymmdd(series: pd.Series) -> pd.Series:
     """Parse a numeric YYYYMMDD column into a datetime series (NaT for invalid)."""
@@ -143,30 +145,53 @@ def compute_timings(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_cohort(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
-    """Drop duplicates, filter to ischemic stroke, derive outcome variables."""
+def build_cohort(df: pd.DataFrame,
+                 exclusions: list[dict] | None = None) -> tuple[pd.DataFrame, int, int]:
+    """Drop duplicates, filter to ischemic stroke, derive outcome variables.
+
+    `exclusions`: optional list that receives one build_log.record_exclusion entry per
+    filtering stage (rows and distinct patients before/after, with the reason) — the
+    frozen-table build log reads it. Return value unchanged: (df, n_raw, n_filtered).
+    """
+    if exclusions is None:
+        exclusions = []
     n_raw = len(df)
 
     # 1. Drop exact duplicate rows
+    before = df
     df = df.drop_duplicates().copy()
+    record_exclusion(exclusions, "exact duplicate registry rows",
+                     "identical rows (every column) repeated in the registry export",
+                     before, df)
     # Drop rows explicitly labelled 'duplicate' in Type of event
     if "Type of event" in df.columns:
+        before = df
         mask_dup = df["Type of event"].astype("string").str.lower().eq("duplicate")
         df = df.loc[~mask_dup].copy()
+        record_exclusion(exclusions, "rows flagged 'duplicate' in Type of event",
+                         "registrar marked the entry as a duplicate", before, df)
 
     # 2. Filter to ischemic stroke
     if "Type of event" not in df.columns:
         raise SystemExit("Column 'Type of event' not found; cannot filter to ischemic stroke.")
+    before = df
     df = df.loc[df["Type of event"] == "Ischemic stroke"].copy()
+    record_exclusion(exclusions, "not an ischemic stroke",
+                     "Type of event != 'Ischemic stroke' (TIA, haemorrhage, other) — outside "
+                     "the cohort definition; a patient with another ischemic-stroke admission "
+                     "is kept", before, df)
 
     # 3. Collapse same-admission duplicates that the manual 'duplicate' flag
     # missed. Two registrars sometimes enter the same Case ID with conflicting
     # answers (different NIHSS, glucose, prior-stroke history, etc.); without
     # this pass the patient gets half a vote toward each answer in summaries.
     if "Case ID" in df.columns:
-        n_before_case_dedup = len(df)
+        before = df
         df = df.drop_duplicates(subset=["Case ID"], keep="first").copy()
-        n_case_dedup_dropped = n_before_case_dedup - len(df)
+        n_case_dedup_dropped = len(before) - len(df)
+        record_exclusion(exclusions, "same Case ID entered twice",
+                         "two registrars entered the same admission with conflicting answers; "
+                         "the first row is kept", before, df)
         if n_case_dedup_dropped:
             print(f"[prep]  Case ID dedup: dropped {n_case_dedup_dropped} extra rows")
     n_filtered = len(df)
@@ -209,6 +234,9 @@ def preprocess_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # 5. Derive timing variables (ODT, ONT, DNT, DPT) in minutes.
     df = compute_timings(df)
+
+    # add wake-up stroke column
+    df['wake_up_stroke'] = (df['Time of symptom onset known'] == 'wake up').astype(int)
     return df
 
 

@@ -17,6 +17,7 @@ import xgboost as xgb
 
 from fed_stroke import hpo
 from fed_stroke.baseline import score_booster_on_half, split_half
+from fed_stroke.dp.synthetic import assemble_site_frame
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
 from fed_stroke.task import HOLDOUT_PARTITION_SEED, generate_splits, resolve_run_split
 
@@ -25,9 +26,9 @@ from fed_stroke.task import HOLDOUT_PARTITION_SEED, generate_splits, resolve_run
 # helpers
 # --------------------------------------------------------------------------- #
 def _synthetic_half(n=300, seed=0, n_multi=20):
-    """A Geneva-half-shaped frame: case_admission_id (some patients w/ 2 admissions),
-    two features, binary rare-ish outcome. Enough rows that a stratified 20% split is
-    two-class."""
+    """A Geneva-half-shaped frame: case_admission_id (some patients w/ 2 admissions), the
+    full frozen feature set (signal in age / NIHSS, the rest in-range background), binary
+    rare-ish outcome. Enough rows that a stratified 20% split is two-class."""
     rng = np.random.RandomState(seed)
     pids = [f"P{i:04d}" for i in range(n)]
     caids = [f"{p}_1" for p in pids]
@@ -35,12 +36,8 @@ def _synthetic_half(n=300, seed=0, n_multi=20):
     for i in range(n_multi):
         caids.append(f"P{i:04d}_2")
     m = len(caids)
-    return pd.DataFrame({
-        "case_admission_id": caids,
-        FEATURE_COLS[0]: rng.rand(m) * 80,
-        FEATURE_COLS[1]: rng.randint(0, 30, m),
-        TARGET_COL: rng.randint(0, 2, m),
-    })
+    return assemble_site_frame(caids, rng.rand(m) * 80, rng.randint(0, 30, m),
+                               rng.randint(0, 2, m), seed=seed)
 
 
 def _pids(df):
@@ -415,16 +412,17 @@ def test_resolve_run_split_holdout_seed_is_fixed_partition_not_search_seed():
 def test_generate_splits_dedups_to_one_row_per_patient_max_outcome():
     """R3: exactly one admission row per patient; keep a max-outcome admission, tie-break by
     lexicographically smallest case_admission_id. Idempotent."""
-    df = pd.DataFrame({
-        "case_admission_id": ["P0001_1", "P0001_2",      # labels differ -> keep max-outcome _2
-                              "P0002_2", "P0002_1",      # tie (both 1)  -> keep smaller id _1
-                              "P0003_1",                 # single admission -> kept
-                              "P0004_1", "P0004_1"],     # EXACT duplicate row (registry reality:
-                                                         # one admission recorded twice) -> ONE kept
-        FEATURE_COLS[0]: [50.0, 60.0, 70.0, 71.0, 80.0, 90.0, 90.0],
-        FEATURE_COLS[1]: [5, 6, 7, 8, 9, 10, 10],
-        TARGET_COL: [0, 1, 1, 1, 0, 1, 1],
-    })
+    df = assemble_site_frame(
+        ["P0001_1", "P0001_2",      # labels differ -> keep max-outcome _2
+         "P0002_2", "P0002_1",      # tie (both 1)  -> keep smaller id _1
+         "P0003_1",                 # single admission -> kept
+         "P0004_1", "P0004_1"],     # EXACT duplicate row (registry reality: one admission
+                                    # recorded twice) -> ONE kept
+        [50.0, 60.0, 70.0, 71.0, 80.0, 90.0, 90.0],   # age
+        [5, 6, 7, 8, 9, 10, 10],                      # NIHSS
+        [0, 1, 1, 1, 0, 1, 1],
+    )
+    df.iloc[6] = df.iloc[5]        # make the P0004 rows EXACT duplicates (background too)
     tr, va, num_train, num_test = generate_splits(df.copy(), TARGET_COL, 0.2, seed=0)
     kept = pd.concat([tr, va]).sort_values("case_admission_id")
     assert list(kept["case_admission_id"]) == ["P0001_2", "P0002_1", "P0003_1", "P0004_1"]
@@ -449,15 +447,18 @@ def test_generate_splits_encodes_missing_as_sentinel(tmp_path):
     from fed_stroke.schema import MISSING_SENTINEL
 
     df = _synthetic_half(n=60, n_multi=0)
-    df.loc[3, FEATURE_COLS[1]] = np.nan          # missing NIHSS
-    df.loc[7, FEATURE_COLS[0]] = np.nan          # missing age
+    df.loc[3, "NIHSS"] = np.nan                  # missing NIHSS
+    df.loc[7, "age"] = np.nan                    # missing age
     tr, va, _, _ = generate_splits(df.copy(), TARGET_COL, 0.2, seed=0)
     both = pd.concat([tr, va])
     assert both[FEATURE_COLS].notna().all().all()               # no NaN survives
     assert (both[FEATURE_COLS] == MISSING_SENTINEL).sum().sum() == 2
     enc = both.set_index("case_admission_id")
-    assert enc.loc["P0003_1", FEATURE_COLS[1]] == MISSING_SENTINEL
-    assert enc.loc["P0007_1", FEATURE_COLS[0]] == MISSING_SENTINEL
+    assert enc.loc["P0003_1", "NIHSS"] == MISSING_SENTINEL
+    assert enc.loc["P0007_1", "age"] == MISSING_SENTINEL
+    # a table missing a frozen column is a contract violation, not something to skip silently
+    with pytest.raises(ValueError, match="frozen-schema columns absent"):
+        generate_splits(df.drop(columns=["d_dimer"]), TARGET_COL, 0.2, seed=0)
     # Idempotence: re-splitting the encoded frame changes nothing.
     tr2, va2, _, _ = generate_splits(both.copy(), TARGET_COL, 0.2, seed=0)
     assert (pd.concat([tr2, va2])[FEATURE_COLS] == MISSING_SENTINEL).sum().sum() == 2
@@ -486,10 +487,8 @@ def test_hash_split_is_adjacency_stable_per_patient():
             removed = df[~df["case_admission_id"].str.startswith(victim + "_")]
             after = sides(removed, seed)
             assert after == {p: s for p, s in base.items() if p != victim}
-        added = pd.concat([df, pd.DataFrame({
-            "case_admission_id": ["Q9999_1"], FEATURE_COLS[0]: [55.0],
-            FEATURE_COLS[1]: [12], TARGET_COL: [1],
-        })], ignore_index=True)
+        added = pd.concat([df, assemble_site_frame(["Q9999_1"], [55.0], [12], [1])],
+                          ignore_index=True)
         after = sides(added, seed)
         assert {p: s for p, s in after.items() if p != "Q9999"} == base
 

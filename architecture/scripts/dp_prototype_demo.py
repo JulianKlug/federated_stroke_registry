@@ -34,6 +34,7 @@ warnings.filterwarnings("ignore", message="Optimal RDP order.*")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fed_stroke.dp import (  # noqa: E402
+    FEATURE_RANGES,
     BoostParams,
     DPConfig,
     num_gaussian_releases,
@@ -94,7 +95,8 @@ def main() -> None:
           f"max_depth={args.max_depth}, rounds={args.rounds}, mechanism={args.mechanism}")
     print(f"levels (D×T) = {levels}   gaussian releases (2×D×T) = {releases}   "
           f"δ=1e-5, q=1.0")
-    print("Banner: the DP arm uses FIXED public-range bins (Age 0–120, NIHSS 0–42; NOT data "
+    print(f"Banner: the DP arm uses FIXED public-range bins over the {len(FEATURE_RANGES)} frozen "
+          "features (fed_stroke.dp.boost.FEATURE_RANGES, e.g. age 0–120, NIHSS 0–42; NOT data "
           "quantiles) and forces subsample=1.0 (honest ε upper bound).")
     print()
 

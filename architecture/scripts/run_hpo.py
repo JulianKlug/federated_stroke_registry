@@ -108,7 +108,7 @@ def _render_narrowed_ranges(results, ranked):
             f"(top {hpo._fmt(sig['top_objective'])}, median "
             f"{hpo._fmt(sig['median_objective'])}, gap "
             f"{hpo._fmt(sig['top_minus_median'])}). Do NOT read the 'winner' as a "
-            "real optimum — over 2 features and ~1k rows the AUC gaps can be smaller "
+            "real optimum — over ~1k rows per site the AUC gaps can be smaller "
             "than MC-CV split noise (§8). These ranges are provisional regardless "
             "(re-tuned cross-site in v1.3).",
             "",

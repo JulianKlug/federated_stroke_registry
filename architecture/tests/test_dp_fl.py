@@ -33,6 +33,7 @@ from fed_stroke.dp import (
 )
 from fed_stroke.dp import accounting as A
 from fed_stroke.dp import boost as B
+from fed_stroke.dp.synthetic import assemble_site_matrix
 from fed_stroke.metrics import REQUIRED_METRIC_KEYS, compute_binary_metrics
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
 from fed_stroke.server_app import derive_num_rounds, save_final_model
@@ -44,11 +45,12 @@ DELTA = 1e-5
 
 
 def _data(n=200, seed=0):
-    """Two-feature synthetic site in the FEATURE_RANGES columns/order (Age, NIH)."""
+    """Synthetic site in the frozen FEATURE_COLS / FEATURE_RANGES layout: the label rides on the
+    two signal columns (age, NIHSS); the other 39 columns are in-range background."""
     gen = np.random.default_rng(seed)
-    X = np.column_stack([gen.uniform(0, 120, n), gen.uniform(0, 42, n)])
-    y = ((X[:, 0] / 120 + X[:, 1] / 42 + gen.normal(0, 0.3, n)) > 1.0).astype(float)
-    return X, y
+    age, nih = gen.uniform(0, 120, n), gen.uniform(0, 42, n)
+    y = ((age / 120 + nih / 42 + gen.normal(0, 0.3, n)) > 1.0).astype(float)
+    return assemble_site_matrix(age, nih, seed), y
 
 
 def _params(base_score=0.5, seed=0):
@@ -75,8 +77,8 @@ def test_release_count_and_sigma_reconstruction():
     assert num_gaussian_releases(acct) == 2 * 4 * 20 == 160
 
     dp = DPConfig(enabled=True, mechanism="gaussian", target_epsilon=30.0, delta=DELTA)
-    m1 = make_mechanism(dp, acct, 2)
-    m2 = make_mechanism(dp, acct, 2)
+    m1 = make_mechanism(dp, acct, len(B.FEATURE_RANGES))
+    m2 = make_mechanism(dp, acct, len(B.FEATURE_RANGES))
     assert m1.num_releases == 160
     # σ is a pure function of config -> every stateless round reconstructs the identical σ (§3.5).
     assert m1.noise_multiplier == m2.noise_multiplier
@@ -277,7 +279,7 @@ def test_bagging_merge_sums_contributions_and_rejects_drift():
     # base_score=0.6 -> base_margin = logit(0.6) != 0, so "counted once" vs "twice" is observable.
     dp = DPConfig(enabled=True, target_epsilon=30.0, delta=DELTA)
     acct = BoostParams.from_xgb_params(_params(base_score=0.6), num_boost_round=20)
-    mech = make_mechanism(dp, acct, 2)
+    mech = make_mechanism(dp, acct, len(B.FEATURE_RANGES))
     growth = BoostParams.from_xgb_params(_params(base_score=0.6), num_boost_round=1)
 
     bA, replyA = _bagging_reply(X, y, mech, growth, dp, 111, 10)
@@ -324,7 +326,7 @@ def test_empty_accumulator_adopts_round1_replies():
     X, y = _data()
     dp = DPConfig(enabled=True, target_epsilon=30.0, delta=DELTA)
     acct = BoostParams.from_xgb_params(_params(), num_boost_round=20)
-    mech = make_mechanism(dp, acct, 2)
+    mech = make_mechanism(dp, acct, len(B.FEATURE_RANGES))
     growth = BoostParams.from_xgb_params(_params(), num_boost_round=1)
     _, replyA = _bagging_reply(X, y, mech, growth, dp, 111, 10)
     _, replyB = _bagging_reply(X, y, mech, growth, dp, 222, 20)
@@ -373,9 +375,9 @@ def test_score_booster_on_half_dispatches_on_type(tmp_path):
     import pandas as pd
 
     X, y = _data(n=240, seed=3)
-    df = pd.DataFrame({FEATURE_COLS[0]: X[:, 0], FEATURE_COLS[1]: X[:, 1],
-                       "case_admission_id": [f"{i}_a" for i in range(len(y))],
-                       TARGET_COL: y.astype(int)})
+    df = pd.DataFrame(X, columns=FEATURE_COLS)
+    df.insert(0, "case_admission_id", [f"{i}_a" for i in range(len(y))])
+    df[TARGET_COL] = y.astype(int)
     half = tmp_path / "geneva_half_A.parquet"
     df.to_parquet(half)
 
@@ -435,11 +437,11 @@ def test_meta_survives_save_and_merge(tmp_path):
     assert reloaded.meta["fed_run_config"]["total_trees"] == total_trees
     # It matches what make_mechanism computed for that config.
     acct = BoostParams.from_xgb_params(_params(), num_boost_round=per_site)
-    assert reloaded.meta["num_releases"] == make_mechanism(dp, acct, 2).num_releases
+    assert reloaded.meta["num_releases"] == make_mechanism(dp, acct, len(B.FEATURE_RANGES)).num_releases
 
     # Merge carries meta from the replies through re-serialize.
     acctm = BoostParams.from_xgb_params(_params(), num_boost_round=per_site)
-    mech = make_mechanism(dp, acctm, 2)
+    mech = make_mechanism(dp, acctm, len(B.FEATURE_RANGES))
     growth = BoostParams.from_xgb_params(_params(), num_boost_round=1)
     _, ra = _bagging_reply(X, y, mech, growth, dp, 111, 10)
     _, rb = _bagging_reply(X, y, mech, growth, dp, 222, 20)
@@ -480,7 +482,7 @@ def test_identity_arm_b_equals_arm_c_with_sigma_zero():
     boost = BoostParams(max_depth=3, num_boost_round=8, base_score=0.5, seed=0)
 
     dp_b = DPConfig(enabled=True, mechanism="identity")
-    mech_b = make_mechanism(dp_b, boost, 2)
+    mech_b = make_mechanism(dp_b, boost, len(B.FEATURE_RANGES))
     assert mech_b.num_releases == 0
     assert math.isinf(mech_b.reported_epsilon)
     arm_b = train_dp_gbdt(X, y, boost, dp_b, rng=np.random.default_rng(0))

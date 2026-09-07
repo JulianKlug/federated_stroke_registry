@@ -283,7 +283,7 @@ def build_signal(ranked: list[dict]) -> dict:
     and whether the winner's objective spread overlaps the runner-up's. Feeds
     results.json["signal"] and a bold WARNING banner in narrowed_ranges.md when
     top≈median or the spreads overlap — so a human never reads a noise-tier winner as
-    a real optimum (small 2-feature schema + rare outcome makes this a real risk, §8).
+    a real optimum (a small cohort with a rare outcome makes this a real risk, §8).
     """
     valid = [t for t in ranked if t.get("valid")]
     if not valid:

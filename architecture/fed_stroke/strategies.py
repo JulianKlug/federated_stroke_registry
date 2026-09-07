@@ -190,10 +190,17 @@ class DPFedXgbBagging(FedXgbBagging):
     def _assert_mergeable(a: DPBooster, b: DPBooster) -> None:
         """Raise if two DPBoosters disagree on any data-independent field (feature_ranges /
         base_margin / max_bins) — a config/node drift that would merge incompatible bin grids."""
-        if a.feature_ranges != b.feature_ranges:
+        # ORDER matters, not just content: edges and the integer feature indices inside the trees
+        # follow the dict's insertion order, and dict == is order-insensitive — two replies with
+        # the same 41 pairs in a different order would merge incompatible bin grids.
+        if (a.feature_ranges != b.feature_ranges
+                or list(a.feature_ranges) != list(b.feature_ranges)):
+            keys = list(dict.fromkeys([*a.feature_ranges, *b.feature_ranges]))
+            differing = [k for k in keys if a.feature_ranges.get(k) != b.feature_ranges.get(k)]
             raise ValueError(
                 f"DP bagging merge: feature_ranges disagree across replies "
-                f"({a.feature_ranges} vs {b.feature_ranges})."
+                f"(same order: {list(a.feature_ranges) == list(b.feature_ranges)}; "
+                f"{len(differing)} differing keys, e.g. {differing[:5]})."
             )
         if a.max_bins != b.max_bins:
             raise ValueError(

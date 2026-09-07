@@ -63,6 +63,10 @@ LAB_DOSAGES: list[tuple[str, list[str]]] = [
 # ``DD.MM.YYYY HH:MM`` — used by both PV ``datetime`` and lab ``sample_date``.
 EHR_DATETIME_FORMAT = "%d.%m.%Y %H:%M"
 
+# Filename prefixes of the two EHR sources inside an extraction directory.
+PV_FILE_PREFIX = "patientvalue"   # patientvalue*.csv: vitals + lab.result.sang.* labs
+LAB_FILE_PREFIX = "lab"           # lab*.csv: labs keyed by dosage_label
+
 
 # ---------------------------------------------------------------------------
 # I/O

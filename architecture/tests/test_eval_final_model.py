@@ -9,6 +9,7 @@ import pandas as pd
 import xgboost as xgb
 
 from fed_stroke.baseline import score_booster_on_half
+from fed_stroke.dp.synthetic import assemble_site_frame
 from fed_stroke.metrics import compute_binary_metrics
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
 from fed_stroke.task import generate_splits
@@ -20,10 +21,7 @@ def _make_half(path, seed=1, n=80):
     nih = rng.uniform(0, 30, n)
     logits = 0.05 * (age - 65) + 0.1 * (nih - 15) + rng.normal(0, 1, n)
     y = (logits > np.quantile(logits, 0.65)).astype(int)
-    df = pd.DataFrame({
-        "case_admission_id": [f"H{i}_1" for i in range(n)],
-        FEATURE_COLS[0]: age, FEATURE_COLS[1]: nih, TARGET_COL: y,
-    })
+    df = assemble_site_frame([f"H{i}_1" for i in range(n)], age, nih, y, seed=seed)
     df.to_parquet(path)
     return df
 

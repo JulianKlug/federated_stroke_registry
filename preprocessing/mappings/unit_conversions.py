@@ -8,6 +8,12 @@ two cohorts can be plotted on a common scale.
 
 Add a `note` whenever the conversion carries an assumption (e.g. assay
 reporting convention) that downstream readers should be aware of.
+
+NOT the frozen-schema path. This table serves only
+registry_alignement/visualize_gva_shenzhen_comparison.py (Geneva → Shenzhen units for the
+comparison plots). The frozen node table (architecture/preprocessing/preprocess_gva.py)
+converts INTO frozen_schema.FROZEN_UNITS via unit_aliases.UNIT_ALIASES; applying this entry
+there would corrupt `d_dimer` (frozen unit ng/ml == the GVA raw unit).
 """
 from __future__ import annotations
 

@@ -24,6 +24,7 @@ from fed_stroke.baseline import load_saved_booster
 from fed_stroke.dp import DP_MODEL_FORMAT, DPBooster, per_site_tree_budget
 from fed_stroke.dp import ledger as dp_ledger
 from fed_stroke.dp.boost import FEATURE_RANGES, fixed_bin_edges
+from fed_stroke.dp.synthetic import assemble_site_frame, assemble_site_matrix
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
 from fed_stroke.server_app import derive_num_rounds
 
@@ -52,12 +53,8 @@ def _make_half(path, prefix, seed, n=60, positive_frac=0.35, n_missing=0):
     logits = 0.05 * (age - 65) + 0.1 * (np.nan_to_num(nih, nan=15.0) - 15) \
         + rng.normal(0, 1, n)
     y = (logits > np.quantile(logits, 1 - positive_frac)).astype(int)
-    df = pd.DataFrame({
-        "case_admission_id": [f"{prefix}{i}_1" for i in range(n)],
-        FEATURE_COLS[0]: age,
-        FEATURE_COLS[1]: nih,
-        TARGET_COL: y,
-    })
+    # full frozen schema; NaNs injected into NIHSS survive assemble_site_frame (float columns)
+    df = assemble_site_frame([f"{prefix}{i}_1" for i in range(n)], age, nih, y, seed=seed)
     df.to_parquet(path)
     return df
 
@@ -80,8 +77,8 @@ def _params(max_depth=MAX_DEPTH):
 
 def _train_xgb(total_trees=TOTAL_TREES, max_depth=MAX_DEPTH):
     rng = np.random.RandomState(0)
-    X = pd.DataFrame({FEATURE_COLS[0]: rng.uniform(40, 90, 200),
-                      FEATURE_COLS[1]: rng.uniform(0, 30, 200)})
+    X = pd.DataFrame(assemble_site_matrix(rng.uniform(40, 90, 200), rng.uniform(0, 30, 200)),
+                     columns=FEATURE_COLS)
     y = (rng.rand(200) < 0.35).astype(int)
     dtrain = xgb.DMatrix(X, label=y)
     return xgb.train({"objective": "binary:logistic", "max_depth": max_depth,
@@ -532,7 +529,7 @@ def _results_fixture(provenance="real-frozen-schema", strategy="bagging",
             "config_notes": [], "num_rounds": 2, "per_site_tree_budget": 2}
     cohort = {h: {"raw_rows": 60, "rows_after_dedup": 60,
                   "patients_after_dedup": 60,
-                  "missingness": {FEATURE_COLS[0]: 0.0, FEATURE_COLS[1]: 0.05}}
+                  "missingness": {**{c: 0.0 for c in FEATURE_COLS}, "NIHSS": 0.05}}
               for h in HALVES}
     ledger = {"path": "/abs/dp_ledger.jsonl", "entries_added": [],
               "ledger_total": totals,
@@ -611,8 +608,9 @@ def test_cohort_stats_dedup_and_missingness(tmp_path):
         assert st["raw_rows"] == 60
         assert st["rows_after_dedup"] == 60          # unique patients already
         assert st["patients_after_dedup"] == 60
-        assert st["missingness"][FEATURE_COLS[0]] == 0.0
-        assert st["missingness"][FEATURE_COLS[1]] == pytest.approx(0.1)
+        assert set(st["missingness"]) == set(FEATURE_COLS)   # one rate per frozen feature
+        assert st["missingness"]["age"] == 0.0
+        assert st["missingness"]["NIHSS"] == pytest.approx(0.1)
 
 
 def test_cohort_stats_counts_dedup(tmp_path):
@@ -637,7 +635,7 @@ def test_load_saved_booster_xgb_contract(tmp_path):
     loaded = load_saved_booster(path)
     assert loaded.fmt == "xgboost-json"
     assert loaded.n_trees == 2
-    X = pd.DataFrame({FEATURE_COLS[0]: [70.0], FEATURE_COLS[1]: [10.0]})
+    X = pd.DataFrame(assemble_site_matrix([70.0], [10.0]), columns=FEATURE_COLS)
     probs = loaded.booster.predict(xgb.DMatrix(X))
     assert 0.0 <= float(probs[0]) <= 1.0
 
@@ -648,7 +646,7 @@ def test_load_saved_booster_dp_contract(tmp_path):
     loaded = load_saved_booster(path)
     assert loaded.fmt == DP_MODEL_FORMAT
     assert loaded.n_trees == TOTAL_TREES == len(loaded.booster.trees)
-    probs = loaded.booster.predict(np.array([[70.0, 10.0]]))
+    probs = loaded.booster.predict(assemble_site_matrix([70.0], [10.0]))
     assert 0.0 <= float(probs[0]) <= 1.0
 
 

@@ -22,6 +22,7 @@ from fed_stroke.baseline import (
     split_half,
     train_pooled_booster,
 )
+from fed_stroke.dp.synthetic import assemble_site_frame
 from fed_stroke.schema import FEATURE_COLS, TARGET_COL
 from fed_stroke.task import replace_keys
 
@@ -42,12 +43,8 @@ def _make_half(path, prefix, seed, n=60, positive_frac=0.35, single_class=False)
     else:
         logits = 0.05 * (age - 65) + 0.1 * (nih - 15) + rng.normal(0, 1, n)
         y = (logits > np.quantile(logits, 1 - positive_frac)).astype(int)
-    df = pd.DataFrame({
-        "case_admission_id": [f"{prefix}{i}_1" for i in range(n)],
-        FEATURE_COLS[0]: age,
-        FEATURE_COLS[1]: nih,
-        TARGET_COL: y,
-    })
+    # full frozen schema: the signal in (age, NIHSS), the other 39 columns in-range background
+    df = assemble_site_frame([f"{prefix}{i}_1" for i in range(n)], age, nih, y, seed=seed)
     df.to_parquet(path)
     return df
 
@@ -133,10 +130,8 @@ def test_train_pooled_booster_does_not_mutate_params(tmp_path):
 def test_train_pooled_leakage_guard(tmp_path, monkeypatch):
     """A validation patient that also appears in train must raise, not train."""
     halves = _two_halves(tmp_path)
-    shared = pd.DataFrame({
-        "patient_id": ["shared"],
-        FEATURE_COLS[0]: [70.0], FEATURE_COLS[1]: [10.0], TARGET_COL: [1],
-    })
+    shared = assemble_site_frame(["shared_1"], [70.0], [10.0], [1])
+    shared.insert(0, "patient_id", ["shared"])
     train_df = shared.copy()
     valid_df = shared.copy()  # same patient in train AND valid -> leak
     import fed_stroke.baseline as baseline

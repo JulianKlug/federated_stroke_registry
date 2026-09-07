@@ -13,6 +13,7 @@ from fed_stroke.dp import (
     dp_local_boost,
     make_mechanism,
 )
+from fed_stroke.dp.synthetic import assemble_site_matrix
 from fed_stroke.strategies import DPFedXgbBagging, OrderedFedXgbCyclic
 
 
@@ -150,11 +151,12 @@ def test_ensure_site_map_raises_on_missing_reply():
 def _dp_replies(node_hashes):
     gen = np.random.default_rng(0)
     n = 160
-    X = np.column_stack([gen.uniform(0, 120, n), gen.uniform(0, 42, n)])
-    y = ((X[:, 0] / 120 + X[:, 1] / 42) > 1.0).astype(float)
+    age, nih = gen.uniform(0, 120, n), gen.uniform(0, 42, n)
+    X = assemble_site_matrix(age, nih, seed=0)      # full frozen schema, signal in age / NIHSS
+    y = ((age / 120 + nih / 42) > 1.0).astype(float)
     dp = DPConfig(enabled=True, target_epsilon=30.0, delta=1e-5)
     acct = BoostParams.from_xgb_params({"max_depth": 3, "base_score": 0.6}, num_boost_round=20)
-    mech = make_mechanism(dp, acct, 2)
+    mech = make_mechanism(dp, acct, X.shape[1])
     growth = BoostParams.from_xgb_params({"max_depth": 3, "base_score": 0.6}, num_boost_round=1)
     replies, boosters = [], []
     for h, node in node_hashes:

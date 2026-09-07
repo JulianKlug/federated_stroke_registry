@@ -7,7 +7,14 @@ import pandas as pd
 import xgboost as xgb
 from flwr.app import Context
 
-from fed_stroke.schema import FEATURE_COLS, MISSING_SENTINEL, TARGET_COL
+from fed_stroke.schema import (
+    FEATURE_COLS,
+    MISSING_SENTINEL,
+    OUTCOME_COLS,
+    TARGET_COL,
+    TARGET_RULE,
+    label_id,
+)
 
 # The patient-disjoint hold-out partition is pinned to a FIXED seed, deliberately
 # NOT a config key: it must never vary, or the HELD patient set would shift between
@@ -45,18 +52,77 @@ def encode_missing_as_sentinel(data):
     can split on (DMatrix's missing marker stays NaN, so the sentinel is NEVER treated as
     missing by XGBoost). Applied at the generate_splits chokepoint — NOT the DP branch — because
     a DP-only encoding would confound the A→B→C comparison (spec 1.1.a″ R9) with a missingness
-    difference. Idempotent (the sentinel is not NaN). Registry reality this handles: the example
-    halves carry ~4.5% missing 'NIH on admission'; before this, the DP learner silently binned
-    NaN into the TOP bin (max-NIHSS artifact).
+    difference. Idempotent (the sentinel is not NaN). Registry reality this handles: the
+    example halves carried ~4.5% missing NIHSS; before this, the DP learner silently binned
+    NaN into the TOP bin (max-NIHSS artifact). On the real frozen table several labs are
+    mostly missing (GCS entirely), so every one of the 41 columns goes through here.
+
+    Fails loudly if a frozen column is absent: a table missing a FEATURE_COLS entry is a
+    schema-contract violation (preprocess_gva.validate_frozen_columns guarantees the full
+    set), and silently skipping it would only surface later as a KeyError on the subset.
 
     Exists ONLY because the DP learner's fixed public bins cannot represent NaN and the R7 gate
     refuses non-finite features. If the project later moves forward WITHOUT DP: remove this
     (grep REMOVE-IF-NO-DP) and let XGBoost's native NaN handling take over.
     """
+    missing = [col for col in FEATURE_COLS if col not in data.columns]
+    if missing:
+        raise ValueError(
+            f"frozen-schema columns absent from the loaded table ({len(missing)} of "
+            f"{len(FEATURE_COLS)}): {missing[:6]}{' ...' if len(missing) > 6 else ''}"
+        )
     for col in FEATURE_COLS:
-        if col in data.columns:
-            data[col] = data[col].fillna(MISSING_SENTINEL)
+        data[col] = data[col].fillna(MISSING_SENTINEL)
     return data
+
+
+def derive_label(outcome: pd.Series, rule=None) -> pd.Series:
+    """Frozen outcome column -> training label as float64 in {0, 1, NaN}.
+
+    `rule` None: the column must already be binary. Otherwise `rule(values)` (e.g.
+    schema.mrs_at_most(2)) is applied to the RECORDED values only — NaN stays NaN so the row
+    can be dropped, never silently labelled. Anything outside {0, 1} after the rule raises.
+    """
+    s = pd.to_numeric(outcome, errors="raise").astype("float64")
+    if rule is not None:
+        derived = rule(s)
+        if not isinstance(derived, pd.Series):
+            derived = pd.Series(list(derived), index=s.index)
+        s = derived.astype("float64").where(s.notna())
+    bad = sorted(set(s.dropna().unique()) - {0.0, 1.0})
+    if bad:
+        raise ValueError(
+            f"label derived from {outcome.name!r} must be in {{0, 1}}; found {bad} — set "
+            f"schema.TARGET_RULE to binarize an ordinal outcome (e.g. mrs_at_most(2))."
+        )
+    return s
+
+
+def select_labelled_rows(data, outcome=TARGET_COL):
+    """Derive the label of `outcome` and DROP the rows that have none. Returns (frame, n_dropped).
+
+    The frozen table keeps every cohort admission with all OUTCOME_COLS (NaN when not
+    recorded); which rows are trainable depends on the label chosen in fed_stroke.schema, so the
+    drop happens HERE, once, at load (resolve_run_split) — never in a site's preprocessing. A
+    per-record rule on public constants: adjacency-safe for the DP arm (a record without a
+    label contributes to no histogram in any neighbouring dataset either). The label column is
+    cast to int64 so the R7 gate sees exactly {0, 1}. TARGET_RULE applies only when `outcome`
+    IS the schema's TARGET_COL; any other outcome column must already be binary.
+    """
+    if outcome not in data.columns:
+        carried = [c for c in OUTCOME_COLS if c in data.columns]
+        raise ValueError(
+            f"label column {outcome!r} absent from the loaded table (frozen outcome columns "
+            f"present: {carried}); fed_stroke.schema.TARGET_COL must name a column the site "
+            f"preprocessing delivers."
+        )
+    rule = TARGET_RULE if outcome == TARGET_COL else None
+    data = data.copy()
+    data[outcome] = derive_label(data[outcome], rule)
+    keep = data[outcome].notna()
+    out = data.loc[keep].copy()
+    out[outcome] = out[outcome].astype("int64")
+    return out, int((~keep).sum())
 
 
 def dedup_one_row_per_patient(data, outcome):
@@ -185,7 +251,15 @@ def resolve_run_split(data, outcome, split_seed=42, holdout_frac=0.0,
     like generate_splits — callers subset to FEATURE_COLS/TARGET_COL as needed.
     Patient-level partitioning is delegated to generate_splits, so the DEV/HELD
     boundary respects the multiple-admission (patient_id) guard.
+
+    Label first, ONCE per load: the frozen table carries every cohort admission and all
+    OUTCOME_COLS; select_labelled_rows derives `outcome`'s label (schema.TARGET_RULE) and
+    drops the rows without one before any dedup or split. Called exactly once per load path
+    (the federated loader and baseline.split_half both enter here once), so an ordinal rule
+    is never applied twice.
     """
+    data, _ = select_labelled_rows(data, outcome)
+
     if holdout_frac == 0.0:
         train_df, valid_df, _, _ = generate_splits(
             data, outcome=outcome, test_size=0.2, seed=split_seed,
@@ -239,10 +313,20 @@ def _resolve_context_split(context: Context):
 
     n_rows = len(data_df)
     n_patients = data_df['case_admission_id'].str.split('_').str[0].nunique()
-    label_balance = data_df[target_col].mean()
+    # The parquet carries every cohort admission and all OUTCOME_COLS; the label is chosen in
+    # fed_stroke.schema and the unlabelled rows are dropped ONCE inside resolve_run_split
+    # (select_labelled_rows). Counted here up front so the loader log shows it.
+    if target_col not in data_df.columns:
+        raise ValueError(
+            f"{data_path.name}: label column {target_col!r} absent; outcome columns present: "
+            f"{[c for c in OUTCOME_COLS if c in data_df.columns]}"
+        )
+    n_unlabelled = int(data_df[target_col].isna().sum())
+    recorded = data_df[target_col].dropna()
+    label_balance = derive_label(recorded, TARGET_RULE).mean() if len(recorded) else float("nan")
     print(
-        f"load_data_gva({data_path.name}): rows={n_rows}, "
-        f"unique_patients={n_patients}, label_balance={label_balance:.4f}"
+        f"load_data_gva({data_path.name}): rows={n_rows}, unique_patients={n_patients}, "
+        f"label={label_id()}, rows_without_label={n_unlabelled}, label_balance={label_balance:.4f}"
     )
 
     # Split contract driven by run_config (all default to today's flat seed-42
