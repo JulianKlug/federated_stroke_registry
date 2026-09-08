@@ -279,9 +279,13 @@ unblocking Phase v1.3.
   Publish `registry_alignement/FROZEN_FEATURES.md` naming every included
   variable, its Geneva source, its Shenzhen source, and its unit after
   conversion.
-- [ ] Geneva preprocessing: EHR → tabular in the frozen schema. Extends
+- [x] Geneva preprocessing: EHR → tabular in the frozen schema. Extends
   `registry_alignement/geneva_preprocessing/`. Completion unblocks v0.a
   (local sanity baseline for Geneva) and Phase v1.1/v1.2.
+  **Status (2026-09-08): frozen parquet delivered by the data provider
+  (frozen-v2, anon-v1, 3424 admissions / 3218 patients); real halves built via
+  split_gva_halves.py; node provenance flipped to real-frozen-schema. See
+  docs/logbook.md 2026-09-08.**
 - [ ] Shenzhen preprocessing: same schema, run remotely by partner. Needs
   partner sign-off on the frozen schema before code moves. Completion
   (with the smoke-test artifact and divergence gates below) unblocks
@@ -312,8 +316,12 @@ failure explained.
 Two milestones, each triggered by its site's preprocessing completing. Maps
 to architecture doc §8's v0 milestone.
 
-- [ ] v0.a Local xgboost on real Geneva data at the frozen schema. Report
+- [x] v0.a Local xgboost on real Geneva data at the frozen schema. Report
   AUC-ROC, AUC-PR, Brier on a held-out Geneva split. Unblocks v1.1/v1.2.
+  **Status (2026-09-08): published in docs/logbook.md — half A AUC-ROC 0.859 /
+  AUC-PR 0.542 / Brier 0.080, half B 0.843 / 0.625 / 0.101 (pooled XGBoost,
+  pyproject defaults, seed-42 valid splits). Mirror into the 1.1.e notebook
+  when it exists.**
 - [ ] v0.b Local xgboost on real Shenzhen data at the frozen schema, run
   remotely by partner. Same three metrics on their held-out split. Only
   the metric numbers leave the site — no data, no model. Unblocks v1.3.

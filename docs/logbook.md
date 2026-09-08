@@ -346,3 +346,34 @@
     attrs and refuses a frame without the anonymisation stamp. Smoke report per-feature
     `min`/`max` → `p05`/`p95`.
 
+
+- 2026-09-08 — **Real frozen GVA dataset received; halves built; v0.a published; first real
+  federated run.** The data provider delivered `gva_frozen.parquet` (frozen-v2, anon-v1,
+  provenance real-frozen-schema) at `/mnt/hdd1/datasets/GVA_stroke_registry/frozen_GVA_dataset/`:
+  3424 admissions / 3218 patients, all build-log gates pass (out-of-range ≤ 21.4% on DNT, unit
+  check pass). Downstream steps taken today:
+  - `split_gva_halves.split_patient_disjoint_halves` implemented (was a stub): reuses
+    `preprocessing.splits.stratified_patient_split` on `fed_stroke.schema.TARGET_COL`
+    (death_3m); NaN outcomes form their own stratum so no admission is dropped (label drop
+    stays loader-side); patient-disjointness asserted (Claim 9 / B-F9); `source_files` TODO
+    filled with the frozen parquet's sha256. Tests: `tests/test_split_gva_halves.py` (4),
+    suite 360/360.
+  - Real halves written to `out/geneva_half_{A,B}.parquet` (+ per-half smoke reports):
+    A = 1705 rows / 1609 patients, B = 1719 / 1609; death_3m positive rate 15.7% vs 15.5%,
+    missing 12.1% vs 12.2% — no divergence-gate concern between halves.
+  - `architecture/pyproject.toml` data-provenance flipped `example-halves` →
+    `real-frozen-schema` (both nodes + submitter default). DP rails armed; ledger empty
+    (`out/dp_ledger.jsonl` does not exist yet — zero ε spent).
+  - **v0.a (local sanity baseline, Geneva) published.** Pooled XGBoost at the pyproject
+    defaults (eta 0.1, depth 4, min_child_weight 5, subsample/colsample 0.8, 40 trees,
+    seed 0), scored on each half's seed-42 valid split via `score_booster_on_half`:
+    half A AUC-ROC 0.859 [0.787, 0.917], AUC-PR 0.542, Brier 0.080 (n=265, 34 pos);
+    half B AUC-ROC 0.843 [0.779, 0.903], AUC-PR 0.625, Brier 0.101 (n=263, 45 pos).
+    To be mirrored into the 1.1.e notebook skeleton when it exists.
+  - First federated run on real data over TLS (bagging, default 20 rounds, non-DP):
+    site AUC-ROC A 0.847 / B 0.820 — within 1.2 / 2.3 AUC points of the pooled baseline,
+    i.e. inside the 1.d ±3 tripwire on real data. One run ≈ 5m15s wall ⇒ the full 1.1.a
+    grid (972 search runs) ≈ 3.6 days sequential; `--max-trials` / `--resume` are the
+    bounding knobs. **Next deliberate acts (user):** launch the 1.1.a real sweep
+    (`scripts/run_hpo.py --strategy bagging --data-provenance real-frozen-schema`), then
+    1.1.b with `--operator` + `--gate-ack` (spends real ε; ledger composes across re-runs).

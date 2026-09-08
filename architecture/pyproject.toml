@@ -63,7 +63,7 @@ boot-seed = 0                # RNG seed for reproducible bootstrap CIs
 # ledger) key off the NODE-owned [tool.fed_stroke.nodes.*].data-provenance, and the client
 # refuses a DP run whose declaration disagrees with the node's (reviewer A C1 / B F8). It is
 # stamped into artifacts and must be overridden to match on real frozen-schema runs.
-data-provenance = "example-halves"
+data-provenance = "real-frozen-schema"
 
 # HPO split protocol (roadmap 1.1.a; docs/specs/1_1_a_hpo_harness.md §4.5/§4.6).
 # All three default to today's FLAT single-split behavior, so an unconfigured run is
@@ -131,8 +131,8 @@ ca-cert = "architecture/.secrets/ca.crt"  # repo-relative; resolved to absolute 
 # nodes to "real-frozen-schema" when the frozen-schema halves are in place. The ledger path is
 # repo-relative here and resolved absolute by run_local_federation.sh (append-only, site-local
 # per spec 1.1.a″ R6; each site appends its authorized (k, σ, ε) on its first train call).
-node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", key = "node_A", dp-site-weight = 1000, data-provenance = "example-halves", dp-ledger-path = "out/dp_ledger.jsonl" }
-node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B", dp-site-weight = 1000, data-provenance = "example-halves", dp-ledger-path = "out/dp_ledger.jsonl" }
+node_A = { data-path = "out/geneva_half_A.parquet", appio = "127.0.0.1:9094", key = "node_A", dp-site-weight = 1000, data-provenance = "real-frozen-schema", dp-ledger-path = "out/dp_ledger.jsonl" }
+node_B = { data-path = "out/geneva_half_B.parquet", appio = "127.0.0.1:9095", key = "node_B", dp-site-weight = 1000, data-provenance = "real-frozen-schema", dp-ledger-path = "out/dp_ledger.jsonl" }
 
 [dependency-groups]
 # opacus (pulls torch, ~heavy) is the DP-accountant equivalence-gate reference ONLY
