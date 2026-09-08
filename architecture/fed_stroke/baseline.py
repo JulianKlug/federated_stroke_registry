@@ -128,7 +128,7 @@ def split_half(data_path, split_seed=42, holdout_frac=0.0, holdout_eval=False):
 
     The exact split contract `load_data_gva` uses, so `valid_df` here IS the split
     `client_app.evaluate` scored on. The returned frames carry the full column set
-    (incl. `patient_id`/`case_admission_id`/target) — callers subset as needed.
+    (incl. `patient_id`/`schema.ID_COL`/target) — callers subset as needed.
 
     Defaults (`split_seed=42, holdout_frac=0.0, holdout_eval=False`) reproduce the
     old hardcoded `generate_splits(..., test_size=0.2, seed=42)` split byte-for-byte,

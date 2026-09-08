@@ -15,14 +15,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from .case_ids import build_case_admission_id
+from .case_ids import RAW_ID_COL, build_case_admission_id
+from .mappings.frozen_schema import ID_COL
 
 
 def patient_ids(df: pd.DataFrame) -> pd.Series | None:
-    """Distinct-patient key of a frame at any pipeline stage: from `case_admission_id`
-    ('<patient_id>_<eds>') when present, else from the registry 'Case ID'; None if neither."""
-    if "case_admission_id" in df.columns:
-        return df["case_admission_id"].astype(str).str.split("_").str[0]
+    """Distinct-patient key of a frame at any pipeline stage: the prefix of the pseudonymous
+    ID_COL (de-identified table) or of the raw RAW_ID_COL ('<patient_id>_<eds>') when present,
+    else from the registry 'Case ID'; None if none of them."""
+    for id_col in (ID_COL, RAW_ID_COL):
+        if id_col in df.columns:
+            return df[id_col].astype(str).str.split("_").str[0]
     if "Case ID" in df.columns:
         return build_case_admission_id(df["Case ID"].astype(str)).str.split("_").str[0]
     return None

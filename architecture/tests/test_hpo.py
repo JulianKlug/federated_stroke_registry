@@ -18,7 +18,7 @@ import xgboost as xgb
 from fed_stroke import hpo
 from fed_stroke.baseline import score_booster_on_half, split_half
 from fed_stroke.dp.synthetic import assemble_site_frame
-from fed_stroke.schema import FEATURE_COLS, TARGET_COL
+from fed_stroke.schema import FEATURE_COLS, ID_COL, TARGET_COL
 from fed_stroke.task import HOLDOUT_PARTITION_SEED, generate_splits, resolve_run_split
 
 
@@ -26,7 +26,7 @@ from fed_stroke.task import HOLDOUT_PARTITION_SEED, generate_splits, resolve_run
 # helpers
 # --------------------------------------------------------------------------- #
 def _synthetic_half(n=300, seed=0, n_multi=20):
-    """A Geneva-half-shaped frame: case_admission_id (some patients w/ 2 admissions), the
+    """A Geneva-half-shaped frame: ID_COL ids (some patients w/ 2 admissions), the
     full frozen feature set (signal in age / NIHSS, the rest in-range background), binary
     rare-ish outcome. Enough rows that a stratified 20% split is two-class."""
     rng = np.random.RandomState(seed)
@@ -41,7 +41,7 @@ def _synthetic_half(n=300, seed=0, n_multi=20):
 
 
 def _pids(df):
-    return set(df["case_admission_id"].str.split("_").str[0])
+    return set(df[ID_COL].str.split("_").str[0])
 
 
 # --------------------------------------------------------------------------- #
@@ -363,15 +363,15 @@ def test_resolve_run_split_flat_delegates_to_generate_splits():
                                    split_seed=42, holdout_frac=0.0)
     b_tr, b_va, _, _ = generate_splits(df.copy(), outcome=TARGET_COL,
                                        test_size=0.2, seed=42)
-    assert set(a_tr["case_admission_id"]) == set(b_tr["case_admission_id"])
-    assert set(a_va["case_admission_id"]) == set(b_va["case_admission_id"])
+    assert set(a_tr[ID_COL]) == set(b_tr[ID_COL])
+    assert set(a_va[ID_COL]) == set(b_va[ID_COL])
 
 
 def test_resolve_run_split_distinct_seeds_distinct_dev_splits():
     df = _synthetic_half()
     tr1, va1 = resolve_run_split(df.copy(), TARGET_COL, split_seed=1, holdout_frac=0.2)
     tr2, va2 = resolve_run_split(df.copy(), TARGET_COL, split_seed=2, holdout_frac=0.2)
-    assert set(va1["case_admission_id"]) != set(va2["case_admission_id"])
+    assert set(va1[ID_COL]) != set(va2[ID_COL])
 
 
 def test_resolve_run_split_holdout_is_patient_disjoint_from_every_search_split():
@@ -411,7 +411,7 @@ def test_resolve_run_split_holdout_seed_is_fixed_partition_not_search_seed():
 # --------------------------------------------------------------------------- #
 def test_generate_splits_dedups_to_one_row_per_patient_max_outcome():
     """R3: exactly one admission row per patient; keep a max-outcome admission, tie-break by
-    lexicographically smallest case_admission_id. Idempotent."""
+    lexicographically smallest id. Idempotent."""
     df = assemble_site_frame(
         ["P0001_1", "P0001_2",      # labels differ -> keep max-outcome _2
          "P0002_2", "P0002_1",      # tie (both 1)  -> keep smaller id _1
@@ -424,16 +424,16 @@ def test_generate_splits_dedups_to_one_row_per_patient_max_outcome():
     )
     df.iloc[6] = df.iloc[5]        # make the P0004 rows EXACT duplicates (background too)
     tr, va, num_train, num_test = generate_splits(df.copy(), TARGET_COL, 0.2, seed=0)
-    kept = pd.concat([tr, va]).sort_values("case_admission_id")
-    assert list(kept["case_admission_id"]) == ["P0001_2", "P0002_1", "P0003_1", "P0004_1"]
+    kept = pd.concat([tr, va]).sort_values(ID_COL)
+    assert list(kept[ID_COL]) == ["P0001_2", "P0002_1", "P0003_1", "P0004_1"]
     assert kept["patient_id"].is_unique
-    assert kept.set_index("case_admission_id")[TARGET_COL].to_dict() == {
+    assert kept.set_index(ID_COL)[TARGET_COL].to_dict() == {
         "P0001_2": 1, "P0002_1": 1, "P0003_1": 0, "P0004_1": 1,
     }
     assert num_train + num_test == 4
     # Idempotence: splitting the already-deduped rows again keeps the identical row set.
     tr2, va2, _, _ = generate_splits(kept.copy(), TARGET_COL, 0.2, seed=0)
-    assert set(pd.concat([tr2, va2])["case_admission_id"]) == set(kept["case_admission_id"])
+    assert set(pd.concat([tr2, va2])[ID_COL]) == set(kept[ID_COL])
 
 
 def test_generate_splits_encodes_missing_as_sentinel(tmp_path):
@@ -453,7 +453,7 @@ def test_generate_splits_encodes_missing_as_sentinel(tmp_path):
     both = pd.concat([tr, va])
     assert both[FEATURE_COLS].notna().all().all()               # no NaN survives
     assert (both[FEATURE_COLS] == MISSING_SENTINEL).sum().sum() == 2
-    enc = both.set_index("case_admission_id")
+    enc = both.set_index(ID_COL)
     assert enc.loc["P0003_1", "NIHSS"] == MISSING_SENTINEL
     assert enc.loc["P0007_1", "age"] == MISSING_SENTINEL
     # a table missing a frozen column is a contract violation, not something to skip silently
@@ -484,7 +484,7 @@ def test_hash_split_is_adjacency_stable_per_patient():
     for seed in (0, 1, 7):
         base = sides(df, seed)
         for victim in ("P0000", "P0042", "P0199"):
-            removed = df[~df["case_admission_id"].str.startswith(victim + "_")]
+            removed = df[~df[ID_COL].str.startswith(victim + "_")]
             after = sides(removed, seed)
             assert after == {p: s for p, s in base.items() if p != victim}
         added = pd.concat([df, assemble_site_frame(["Q9999_1"], [55.0], [12], [1])],
@@ -556,7 +556,7 @@ def test_split_half_reconstructs_the_run_split(tmp_path):
     _, sh_valid = split_half(path, split_seed=2, holdout_frac=0.2, holdout_eval=False)
     _, rr_valid = resolve_run_split(pd.read_parquet(path), TARGET_COL,
                                     split_seed=2, holdout_frac=0.2, holdout_eval=False)
-    assert set(sh_valid["case_admission_id"]) == set(rr_valid["case_admission_id"])
+    assert set(sh_valid[ID_COL]) == set(rr_valid[ID_COL])
 
 
 def test_score_booster_on_half_reconstructs_holdout_split(tmp_path):

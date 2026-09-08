@@ -13,7 +13,7 @@ import pytest
 
 from fed_stroke import schema, task
 from fed_stroke.dp.synthetic import assemble_site_frame
-from fed_stroke.schema import FEATURE_COLS, OUTCOME_COLS, TARGET_COL, mrs_at_most
+from fed_stroke.schema import FEATURE_COLS, ID_COL, OUTCOME_COLS, TARGET_COL, mrs_at_most
 
 
 def _frame(labels, seed=0):
@@ -49,7 +49,7 @@ def test_select_labelled_rows_drops_unlabelled_and_casts_int():
     out, n_dropped = task.select_labelled_rows(df, TARGET_COL)
     assert n_dropped == 2 and len(out) == 3
     assert out[TARGET_COL].dtype == "int64" and out[TARGET_COL].tolist() == [1, 0, 1]
-    assert out["case_admission_id"].tolist() == ["p0_1", "p1_1", "p3_1"]
+    assert out[ID_COL].tolist() == ["p0_1", "p1_1", "p3_1"]
     assert len(df) == 5                                     # input untouched
     with pytest.raises(ValueError, match="absent"):
         task.select_labelled_rows(df.drop(columns=[TARGET_COL]), TARGET_COL)
@@ -58,7 +58,7 @@ def test_select_labelled_rows_drops_unlabelled_and_casts_int():
 def test_select_labelled_rows_applies_the_schema_rule_to_the_target_only(monkeypatch):
     monkeypatch.setattr(task, "TARGET_COL", "mrs_3m")
     monkeypatch.setattr(task, "TARGET_RULE", mrs_at_most(2))
-    df = pd.DataFrame({"case_admission_id": ["a_1", "b_1", "c_1"], "mrs_3m": [0.0, 3.0, np.nan],
+    df = pd.DataFrame({ID_COL: ["a_1", "b_1", "c_1"], "mrs_3m": [0.0, 3.0, np.nan],
                        "death_3m": [0.0, 1.0, 0.0]})
     out, n_dropped = task.select_labelled_rows(df, "mrs_3m")
     assert out["mrs_3m"].tolist() == [1, 0] and n_dropped == 1
@@ -75,7 +75,7 @@ def test_resolve_run_split_drops_unlabelled_before_dedup_and_split():
     both = pd.concat([tr, va])
     assert len(both) == 34 and both[TARGET_COL].dtype == "int64"
     assert both[TARGET_COL].isin([0, 1]).all()
-    assert not set(both["case_admission_id"]) & {f"p{i}_1" for i in (3, 8, 15, 22, 30, 37)}
+    assert not set(both[ID_COL]) & {f"p{i}_1" for i in (3, 8, 15, 22, 30, 37)}
 
 
 def test_loader_counts_rows_without_label(tmp_path, capsys):

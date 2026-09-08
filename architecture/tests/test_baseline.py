@@ -32,7 +32,7 @@ PARAMS = {"objective": "binary:logistic", "max_depth": 2, "eta": 0.3, "seed": 0}
 def _make_half(path, prefix, seed, n=60, positive_frac=0.35, single_class=False):
     """Write a synthetic half parquet with unique, half-disjoint patient IDs.
 
-    patient_id = case_admission_id.split('_')[0], so f"{prefix}{i}_1" gives a
+    patient_id = id.split('_')[0], so f"{prefix}{i}_1" gives a
     unique patient per row and disjoint patient sets across prefixes.
     """
     rng = np.random.RandomState(seed)

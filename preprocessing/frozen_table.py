@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .case_ids import RAW_ID_COL
 from .mappings.frozen_schema import UNITLESS, base_unit, is_binary_unit
 from .mappings.unit_aliases import normalize_unit_label
 
@@ -221,7 +222,7 @@ def rename_to_frozen(df: pd.DataFrame, raw_to_frozen: dict[str, str]) -> pd.Data
 
 
 def select_mapped_columns(
-    df: pd.DataFrame, raw_to_frozen: dict[str, str], id_col: str = "case_admission_id"
+    df: pd.DataFrame, raw_to_frozen: dict[str, str], id_col: str = RAW_ID_COL
 ) -> pd.DataFrame:
     """Keep exactly `[id_col, *raw_to_frozen.values()]` — what the MAPPING produced.
 
@@ -245,7 +246,7 @@ def finalize_frozen_table(
     df: pd.DataFrame,
     frozen_features: list[str],
     outcome_cols: list[str],
-    id_col: str = "case_admission_id",
+    id_col: str = RAW_ID_COL,
     outcome_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> pd.DataFrame:
     """Column order `[id_col, *frozen_features, *outcome_cols]`; features AND outcomes float64

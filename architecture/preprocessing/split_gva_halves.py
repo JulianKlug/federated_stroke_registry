@@ -23,7 +23,7 @@ import pandas as pd
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from preprocess_gva import REPO_ROOT, write_node_parquet  # noqa: E402
+from preprocess_gva import REPO_ROOT, read_node_metadata, write_node_parquet  # noqa: E402
 
 SPLIT_SEED = 42   # half-partition seed (same as the dev halves)
 
@@ -63,9 +63,12 @@ def main() -> None:
     args = parser.parse_args()
 
     df = pd.read_parquet(args.frozen)
+    # frame attrs are not stored in a parquet: carry the source file's anonymisation stamp
+    anonymisation = read_node_metadata(args.frozen)["anonymisation"]
     half_a, half_b = split_patient_disjoint_halves(df, args.seed)
     for half, name in ((half_a, "geneva_half_A.parquet"),
                        (half_b, "geneva_half_B.parquet")):
+        half.attrs["anonymisation"] = anonymisation
         summary = write_node_parquet(half, args.out_dir / name,
                                      source_files={})  # TODO: sha256 of --frozen
         print(summary)

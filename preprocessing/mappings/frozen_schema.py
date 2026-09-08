@@ -52,7 +52,10 @@ contract change — bump fed_stroke SCHEMA_VERSION and re-obtain partner sign-of
 from __future__ import annotations
 
 # --- The frozen contract -----------------------------------------------------------
-ID_COL = "case_admission_id"
+# The node parquet's id column: '<patient pseudonym>_<admission ordinal>' (preprocessing.anonymise),
+# never a hospital identifier. The raw '<patient_id>_<eds4>' key (case_ids.RAW_ID_COL) exists
+# only inside a site's preprocessing. Mirrored by fed_stroke.schema.ID_COL.
+ID_COL = "pseudo_admission_id"
 BINARY_UNIT_PREFIX = "binary"   # 'binary' or 'binary (<convention>)': encoded, never unit-converted
 UNITLESS = "no unit"            # scores / ratios: a missing unit label is expected, not a warning
 
@@ -356,7 +359,7 @@ SHENZHEN_TO_FROZEN: dict[str, str] = {
 
 
 def validate_frozen_columns(columns, frozen_features, outcome_cols,
-                            id_col: str = "case_admission_id") -> None:
+                            id_col: str = ID_COL) -> None:
     """Assert a produced table matches the frozen contract EXACTLY.
 
     columns: the produced DataFrame's columns (post-rename).

@@ -35,7 +35,7 @@ from fed_stroke.dp import accounting as A
 from fed_stroke.dp import boost as B
 from fed_stroke.dp.synthetic import assemble_site_matrix
 from fed_stroke.metrics import REQUIRED_METRIC_KEYS, compute_binary_metrics
-from fed_stroke.schema import FEATURE_COLS, TARGET_COL
+from fed_stroke.schema import FEATURE_COLS, ID_COL, TARGET_COL
 from fed_stroke.server_app import derive_num_rounds, save_final_model
 from fed_stroke.strategies import DPFedXgbBagging
 
@@ -376,7 +376,7 @@ def test_score_booster_on_half_dispatches_on_type(tmp_path):
 
     X, y = _data(n=240, seed=3)
     df = pd.DataFrame(X, columns=FEATURE_COLS)
-    df.insert(0, "case_admission_id", [f"{i}_a" for i in range(len(y))])
+    df.insert(0, ID_COL, [f"{i}_a" for i in range(len(y))])
     df[TARGET_COL] = y.astype(int)
     half = tmp_path / "geneva_half_A.parquet"
     df.to_parquet(half)

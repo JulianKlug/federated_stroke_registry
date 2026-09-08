@@ -25,7 +25,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from fed_stroke.dp.boost import FEATURE_RANGES  # single home; do NOT redefine  # noqa: F401
-from fed_stroke.schema import FEATURE_COLS, TARGET_COL, is_binary_feature
+from fed_stroke.schema import FEATURE_COLS, ID_COL, TARGET_COL, is_binary_feature
 
 SIGNAL_FEATURES = ("age", "NIHSS")
 AGE_IDX = FEATURE_COLS.index("age")
@@ -65,12 +65,12 @@ def assemble_site_matrix(age, nih, seed: int = 0) -> np.ndarray:
 
 
 def assemble_site_frame(case_ids, age, nih, y, seed: int = 0) -> pd.DataFrame:
-    """assemble_site_matrix framed for the loader: ['case_admission_id', *FEATURE_COLS,
-    TARGET_COL]. The real node parquet also carries the other schema.OUTCOME_COLS; the loader
+    """assemble_site_matrix framed for the loader: [ID_COL, *FEATURE_COLS, TARGET_COL].
+    The real node parquet also carries the other schema.OUTCOME_COLS; the loader
     only needs TARGET_COL, so fixtures stay minimal."""
     X = assemble_site_matrix(age, nih, seed)
     df = pd.DataFrame(X, columns=FEATURE_COLS)
-    df.insert(0, "case_admission_id", list(case_ids))
+    df.insert(0, ID_COL, list(case_ids))
     df[TARGET_COL] = np.asarray(y)
     return df
 
@@ -98,12 +98,12 @@ def make_synthetic_site(n=1000, coef=(0.05, 0.12), intercept=-3.0, noise=0.5, se
 
 def make_synthetic_frame(n=1000, coef=(0.05, 0.12), intercept=-3.0, noise=0.5,
                          prefix="S", seed=0) -> pd.DataFrame:
-    """Same signal as `make_synthetic_site`, framed as ['case_admission_id', *FEATURE_COLS,
-    TARGET_COL] with a unique `case_admission_id` (f'{prefix}{i}_1'), so it round-trips through
-    the parquet loader (split_half / score_booster_on_half)."""
+    """Same signal as `make_synthetic_site`, framed as [ID_COL, *FEATURE_COLS, TARGET_COL]
+    with a unique id (f'{prefix}{i}_1'), so it round-trips through the parquet loader
+    (split_half / score_booster_on_half)."""
     X, y = make_synthetic_site(n=n, coef=coef, intercept=intercept, noise=noise, seed=seed)
     df = pd.DataFrame(X, columns=FEATURE_COLS)
-    df.insert(0, "case_admission_id", [f"{prefix}{i}_1" for i in range(n)])
+    df.insert(0, ID_COL, [f"{prefix}{i}_1" for i in range(n)])
     df[TARGET_COL] = y
     return df
 

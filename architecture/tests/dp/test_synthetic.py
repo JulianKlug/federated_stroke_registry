@@ -19,7 +19,7 @@ from fed_stroke.dp.synthetic import (
     make_synthetic_site,
     synthetic_train_valid,
 )
-from fed_stroke.schema import FEATURE_COLS, TARGET_COL, is_binary_feature
+from fed_stroke.schema import FEATURE_COLS, ID_COL, TARGET_COL, is_binary_feature
 
 
 def test_generator_determinism():
@@ -71,7 +71,7 @@ def test_assemble_site_matrix_and_frame():
     assert X.shape == (2, len(FEATURE_COLS))
     assert X[:, AGE_IDX].tolist() == [70.0, 80.0] and X[:, NIHSS_IDX].tolist() == [5.0, 20.0]
     df = assemble_site_frame(["a_1", "b_1"], [70.0, 80.0], [5.0, 20.0], [0, 1], seed=0)
-    assert list(df.columns) == ["case_admission_id", *FEATURE_COLS, TARGET_COL]
+    assert list(df.columns) == [ID_COL, *FEATURE_COLS, TARGET_COL]
     assert df["age"].tolist() == [70.0, 80.0] and df[TARGET_COL].tolist() == [0, 1]
     with pytest.raises(ValueError, match="aligned"):
         assemble_site_matrix([1.0], [1.0, 2.0])
@@ -86,8 +86,8 @@ def test_both_classes_in_train_and_valid():
 
 def test_frame_schema_roundtrips():
     df = make_synthetic_frame(n=300, prefix="A", seed=1)
-    assert list(df.columns) == ["case_admission_id", *FEATURE_COLS, TARGET_COL]
+    assert list(df.columns) == [ID_COL, *FEATURE_COLS, TARGET_COL]
     # unique case_admission_id of the f"{prefix}{i}_1" form (patient_id = split('_')[0])
-    assert df["case_admission_id"].is_unique
-    assert df["case_admission_id"].iloc[0] == "A0_1"
+    assert df[ID_COL].is_unique
+    assert df[ID_COL].iloc[0] == "A0_1"
     assert df[TARGET_COL].isin([0, 1]).all()

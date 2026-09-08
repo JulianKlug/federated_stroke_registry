@@ -5,8 +5,10 @@ The single home for preprocessing logic used by BOTH layers:
   - architecture/preprocessing/  (frozen-schema node tables)
 
 Modules:
+  - anonymise:       de-identification of the frozen table (pseudonymous ids, age
+                     floor + keyed jitter + top-code) — the last step before a node parquet
   - build_log:       aggregate-only build log (exclusions with reasons, nulled values)
-  - case_ids:        case_admission_id derivation (registry + EHR)
+  - case_ids:        raw case_admission_id derivation (registry + EHR)
   - registry_cohort: registry cohort filter, OPSUM outcome reconciliation,
                      timing derivation
   - first_values:    first-after-admission lab/vital extraction from the EHR
@@ -20,6 +22,13 @@ Modules:
 Scripts here (prepare_geneva_halves.py) are one-off CLIs, not library code.
 """
 from . import mappings  # noqa: F401
+from .anonymise import (  # noqa: F401
+    ANONYMISATION_SPEC,
+    anonymise_age,
+    anonymise_frozen,
+    keyed_age_jitter,
+    pseudonymise_case_ids,
+)
 from .build_log import (  # noqa: F401
     format_build_log,
     patient_ids,
@@ -27,6 +36,7 @@ from .build_log import (  # noqa: F401
     write_build_log,
 )
 from .case_ids import (  # noqa: F401
+    RAW_ID_COL,
     build_case_admission_id,
     create_ehr_case_identification_column,
     create_registry_case_identification_column,

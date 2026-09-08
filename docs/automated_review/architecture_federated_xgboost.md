@@ -158,6 +158,17 @@ Attack-surface / defence map:
 - Feature-schema freeze: only the aligned columns are exposed to the
   Flower client; nothing else on the site's disk is reachable from the
   training process.
+- Node-parquet de-identification (`preprocessing.anonymise`, anon-v1,
+  schema frozen-v2): the id column is `pseudo_admission_id` =
+  HMAC-SHA256(site key, patient id) + admission ordinal — no hospital
+  identifier leaves the build; age is completed years plus a per-patient
+  keyed jitter (±2 y), top-coded at 90 (SPHN de-identification guidance
+  §5.1.9 / HIPAA Safe Harbor). The key is the data provider's, kept
+  outside the repo and away from the artefacts (HRO Art. 26 coded
+  data), immutable for the project (the R4 split hashes the pseudonym).
+  The parquet carries no frame attrs (they held raw per-feature
+  extremes) and the cross-site smoke report publishes p05/p95, never
+  a single row's min/max.
 
 ### 6.2 Cohort-size and tree-shape hygiene (free, first-line)
 

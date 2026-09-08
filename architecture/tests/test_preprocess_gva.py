@@ -20,7 +20,9 @@ for _p in (REPO_ROOT, ARCH_DIR / "preprocessing"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from preprocessing.anonymise import ANONYMISATION_SPEC, anonymise_frozen  # noqa: E402
 from preprocessing.build_log import format_build_log, record_exclusion, write_build_log  # noqa: E402
+from preprocessing.case_ids import RAW_ID_COL  # noqa: E402
 from preprocessing.registry_cohort import build_cohort  # noqa: E402
 from preprocessing.frozen_table import (  # noqa: E402
     convert_to_frozen_units,
@@ -41,6 +43,7 @@ from preprocessing.mappings import (  # noqa: E402
     GVA_DECLARED_UNITS,
     GVA_PRE_ENCODED_BINARIES,
     GVA_TO_FROZEN,
+    ID_COL,
     SHENZHEN_TO_FROZEN,
     UNIT_ALIASES,
     UNITS,
@@ -52,7 +55,9 @@ from preprocessing.mappings import (  # noqa: E402
 import preprocess_gva  # noqa: E402  (architecture/preprocessing/preprocess_gva.py)
 
 XLSX = REPO_ROOT / "preprocessing" / "mappings" / "frozen_feature_names.xlsx"
-ID = "case_admission_id"
+RAW_ID = RAW_ID_COL          # the raw frame (wide_to_frozen output)
+ID = ID_COL                  # the de-identified node table (anonymise_frozen output)
+TEST_KEY = bytes(range(32))
 VALUE, UNIT = "_first_value", "_first_unit"
 
 # Canonical GVA EHR unit label per *_first_value stem, as the EHR writes them.
@@ -84,7 +89,7 @@ def _in_range(rng, frozen: str, n: int) -> np.ndarray:
 def _in_range_frozen(n: int = 4) -> pd.DataFrame:
     """A frozen-shaped frame with every feature inside its range (binaries 1.0, others midpoint)
     and the three outcome columns recorded."""
-    df = pd.DataFrame({ID: [f"r_{i}" for i in range(n)]})
+    df = pd.DataFrame({RAW_ID: [f"r_{i}" for i in range(n)]})
     for f in FROZEN_FEATURES:
         lo, hi = FROZEN_RANGES[f]
         df[f] = 1.0 if is_binary_unit(FROZEN_UNITS[f]) else (lo + hi) / 2
@@ -98,7 +103,7 @@ def _fake_wide_df() -> pd.DataFrame:
     and strays that must vanish."""
     n = 5
     rng = np.random.default_rng(0)
-    data = {ID: [f"p{i}_000{i}" for i in range(n)]}
+    data = {RAW_ID: [f"p{i}_000{i}" for i in range(n)]}
     for raw, frozen in GVA_TO_FROZEN.items():
         if raw in GVA_BINARY_ENCODINGS:
             keys = list(GVA_BINARY_ENCODINGS[raw])
@@ -137,7 +142,7 @@ def _fake_wide_df() -> pd.DataFrame:
 
 
 def _small_frozen(n=3) -> pd.DataFrame:
-    df = pd.DataFrame({"death_3m": [1] * n, ID: [f"a_{i}" for i in range(n)],
+    df = pd.DataFrame({"death_3m": [1] * n, RAW_ID: [f"a_{i}" for i in range(n)],
                        "mrs_3m": [6.0] * n, "death_in_hospital": [0] * n})
     for f in FROZEN_FEATURES:
         df[f] = 1.0
@@ -375,33 +380,33 @@ def test_select_and_validate_catch_stray_and_missing():
     m = {**GVA_TO_FROZEN, "Height": "height"}
     out = select_mapped_columns(rename_to_frozen(df, m), m)
     with pytest.raises(ValueError, match=r"unexpected=\['height'\]"):
-        validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES)
+        validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES, id_col=RAW_ID)
     # (b) a frozen name the mapping never produces -> missing (a feature, or an outcome)
     m = {k: v for k, v in GVA_TO_FROZEN.items() if k != "IAT"}
     out = select_mapped_columns(rename_to_frozen(df, m), m)
     with pytest.raises(ValueError, match=r"missing=\['EVT'\]"):
-        validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES)
+        validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES, id_col=RAW_ID)
     m = {k: v for k, v in GVA_TO_FROZEN.items() if k != "3M mRS"}
     out = select_mapped_columns(rename_to_frozen(df, m), m)
     with pytest.raises(ValueError, match=r"missing=\['mrs_3m'\]"):
-        validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES)
+        validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES, id_col=RAW_ID)
     # (c) strays (PII, intermediates, non-frozen labs) are gone after select
     out = select_mapped_columns(rename_to_frozen(df, GVA_TO_FROZEN), GVA_TO_FROZEN)
     assert not ({"Last name", "DOB", "ZIP", "admission_date", "DPT", "cystatine_c_first_value",
                  "pulse_first_unit", "pulse_first_datetime"} & set(out.columns))
-    validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES)
+    validate_frozen_columns(out.columns, FROZEN_FEATURES, FROZEN_OUTCOMES, id_col=RAW_ID)
 
 
 def _finalize(df):
-    return finalize_frozen_table(df, FROZEN_FEATURES, FROZEN_OUTCOMES, id_col=ID,
+    return finalize_frozen_table(df, FROZEN_FEATURES, FROZEN_OUTCOMES, id_col=RAW_ID,
                                  outcome_ranges=FROZEN_OUTCOME_RANGES)
 
 
 def test_finalize_dtypes_order_and_uniqueness():
     out = _finalize(_small_frozen())
-    assert out.columns.tolist() == [ID, *FROZEN_FEATURES, *FROZEN_OUTCOMES]
+    assert out.columns.tolist() == [RAW_ID, *FROZEN_FEATURES, *FROZEN_OUTCOMES]
     assert all(out[c].dtype == "float64" for c in (*FROZEN_FEATURES, *FROZEN_OUTCOMES))
-    assert pd.api.types.is_string_dtype(out[ID])
+    assert pd.api.types.is_string_dtype(out[RAW_ID])
 
     # a missing outcome is a value, not a reason to drop the row
     with_nan = _small_frozen()
@@ -410,7 +415,7 @@ def test_finalize_dtypes_order_and_uniqueness():
     assert len(out) == 3 and np.isnan(out.loc[0, "death_3m"])
 
     dup = _small_frozen()
-    dup.loc[1, ID] = dup.loc[0, ID]
+    dup.loc[1, RAW_ID] = dup.loc[0, RAW_ID]
     with pytest.raises(ValueError, match="not unique"):
         _finalize(dup)
 
@@ -452,7 +457,7 @@ def test_nullify_out_of_range_nulls_and_counts():
     assert set(c) == set(FROZEN_FEATURES)
     json.dumps(rep)
     # the outcomes and the id are not features and are untouched
-    assert out[FROZEN_OUTCOMES].equals(df[FROZEN_OUTCOMES]) and out[ID].equals(df[ID])
+    assert out[FROZEN_OUTCOMES].equals(df[FROZEN_OUTCOMES]) and out[RAW_ID].equals(df[RAW_ID])
 
 
 def test_nullify_out_of_range_fails_on_mass_out_of_range():
@@ -561,7 +566,7 @@ def test_format_build_log_lists_stages_and_nulled_features():
 
 
 def test_assemble_and_write_build_log(tmp_path):
-    out = preprocess_gva.wide_to_frozen(_fake_wide_df())
+    out = anonymise_frozen(preprocess_gva.wide_to_frozen(_fake_wide_df()), TEST_KEY)
     assert "exclusions" not in out.attrs                    # wide_to_frozen drops no row
     out.attrs["exclusions"] = []
     record_exclusion(out.attrs["exclusions"], "stage A", "reason A",
@@ -570,6 +575,7 @@ def test_assemble_and_write_build_log(tmp_path):
                                              ehr_rows={"patientvalue": 10, "lab": 5})
     assert "GVA frozen-table build log" in text
     assert "schema_version" in text and preprocess_gva.SCHEMA_VERSION in text
+    assert "anonymisation" in text and ANONYMISATION_SPEC in text
     assert "patientvalue=10, lab=5" in text
     assert "5 rows x 45 cols (5 patients; 41 features + 3 outcomes)" in text
     assert "label" in text and "chosen in fed_stroke.schema" in text
@@ -584,7 +590,7 @@ def test_assemble_and_write_build_log(tmp_path):
 # ---------------------------------------------------------------- node parquet + smoke report
 
 def _frozen_with_build_attrs():
-    out = preprocess_gva.wide_to_frozen(_fake_wide_df())
+    out = anonymise_frozen(preprocess_gva.wide_to_frozen(_fake_wide_df()), TEST_KEY)
     out.attrs["exclusions"] = []
     record_exclusion(out.attrs["exclusions"], "stage A", "reason A",
                      pd.DataFrame({ID: ["p1_1", "p2_1"]}), pd.DataFrame({ID: ["p1_1"]}))
@@ -598,11 +604,14 @@ def test_write_node_parquet_roundtrip_stamp_and_smoke_report(tmp_path):
     hashes = {"registry/r.xlsx": "ab" * 32, "ehr/patientvalue_1.csv": "cd" * 32}
     report = preprocess_gva.write_node_parquet(out, path, source_files=hashes)
 
-    # the parquet IS the frame (values, dtypes, order); pandas even keeps the attrs
+    # the parquet IS the frame (values, dtypes, order) — WITHOUT the attrs (raw extremes, paths)
     back = pd.read_parquet(path)
     assert back.columns.tolist() == [ID, *FROZEN_FEATURES, *FROZEN_OUTCOMES]
     pd.testing.assert_frame_equal(back, out)
-    assert back.attrs["unit_check"]["pass"] is True
+    assert back.attrs == {} and out.attrs["unit_check"]["pass"] is True   # caller's frame untouched
+    assert back[ID].str.fullmatch(r"[0-9a-f]{16}_\d{2}").all()
+    raw_bytes = path.read_bytes()
+    assert b"p0_0000" not in raw_bytes and b"max_seen" not in raw_bytes   # no raw id, no attrs
 
     # provenance stamp in the key-value metadata
     meta = preprocess_gva.read_node_metadata(path)
@@ -611,6 +620,8 @@ def test_write_node_parquet_roundtrip_stamp_and_smoke_report(tmp_path):
     assert meta["source_files"] == hashes == report["source_files"]
     assert meta["feature_cols"] == FROZEN_FEATURES and meta["outcome_cols"] == FROZEN_OUTCOMES
     assert meta["n_rows"] == 5 and meta["created"] == report["created"]
+    assert meta["anonymisation"] == out.attrs["anonymisation"] == report["anonymisation"]
+    assert meta["anonymisation"]["spec"] == ANONYMISATION_SPEC
 
     # smoke report: written next to the parquet, identical to the returned dict, aggregate-only
     rp = tmp_path / "gva_frozen_smoke_report.json"
@@ -621,19 +632,24 @@ def test_write_node_parquet_roundtrip_stamp_and_smoke_report(tmp_path):
                                               "n_positive": 2, "positive_rate": 0.5}
     assert report["outcomes"]["mrs_3m"]["median"] == 2.0
     f = report["features"]["d_dimer"]
-    assert set(f) == {"n_recorded", "missing_rate", "median", "min", "max"}
-    assert f["n_recorded"] == 4 and f["missing_rate"] == 0.2 and f["max"] >= 500.0
-    assert report["features"]["age"]["n_recorded"] == 5                # registry numerics: no NaN in the fixture
+    assert set(f) == {"n_recorded", "missing_rate", "median", "p05", "p95"}   # percentiles, never min/max
+    assert f["n_recorded"] == 4 and f["missing_rate"] == 0.2 and f["p95"] >= 500.0
+    age = report["features"]["age"]
+    assert age["n_recorded"] == 5 and age["p95"] <= 90.0               # registry numerics: no NaN in the fixture
     assert report["unit_check"]["pass"] is True and report["unit_check"]["n_columns_checked"] == 27
     assert report["out_of_range"] == {"pass": True, "n_nulled_total": 0, "max_out_of_range_frac": 0.25,
                                       "nulled": {}}
     assert report["exclusions"][0]["stage"] == "stage A" and report["build_log"] == "out/x.build.log"
-    text = json.dumps(report)
+    text = json.dumps(report) + json.dumps(meta)
     assert "p0_0000" not in text and "Doe" not in text                 # never an id, never a raw value
 
 
 def test_write_node_parquet_rejects_contract_violations_before_writing(tmp_path):
-    out = preprocess_gva.wide_to_frozen(_fake_wide_df())
+    raw = preprocess_gva.wide_to_frozen(_fake_wide_df())
+    out = anonymise_frozen(raw, TEST_KEY)
+    # a raw (not de-identified) frame fails on its id column name — the structural guard
+    with pytest.raises(ValueError, match=rf"missing=\['{ID}'\] unexpected=\['{RAW_ID}'\]"):
+        preprocess_gva.write_node_parquet(raw, tmp_path / "raw.parquet", {})
     with pytest.raises(ValueError, match=r"missing=\['d_dimer'\]"):
         preprocess_gva.write_node_parquet(out.drop(columns=["d_dimer"]), tmp_path / "a.parquet", {})
     with pytest.raises(ValueError, match="ORDER"):
@@ -647,18 +663,24 @@ def test_write_node_parquet_rejects_contract_violations_before_writing(tmp_path)
     ints["IVT"] = ints["IVT"].astype("int64")
     with pytest.raises(ValueError, match=r"float64.*IVT"):
         preprocess_gva.write_node_parquet(ints, tmp_path / "d.parquet", {})
+    unstamped = out.copy()
+    unstamped.attrs = {}
+    with pytest.raises(ValueError, match="anonymisation stamp"):
+        preprocess_gva.write_node_parquet(unstamped, tmp_path / "e.parquet", {})
     assert not list(tmp_path.iterdir())                                # nothing written on failure
 
 
 def test_write_node_parquet_without_build_attrs(tmp_path):
-    bare = preprocess_gva.wide_to_frozen(_fake_wide_df()).copy()
-    bare.attrs = {}                                                    # e.g. a frame assembled elsewhere
+    stamped = anonymise_frozen(preprocess_gva.wide_to_frozen(_fake_wide_df()), TEST_KEY)
+    bare = stamped.copy()
+    bare.attrs = {"anonymisation": stamped.attrs["anonymisation"]}    # e.g. a half read back from parquet
     report = preprocess_gva.write_node_parquet(bare, tmp_path / "half.parquet", {})
     assert report["unit_check"]["pass"] is None and "not available" in report["unit_check"]["note"]
     assert report["out_of_range"]["pass"] is None
     assert report["exclusions"] is None and report["build_log"] is None
     assert (tmp_path / "half_smoke_report.json").exists()
-    assert preprocess_gva.read_node_metadata(tmp_path / "half.parquet")["source_files"] == {}
+    meta = preprocess_gva.read_node_metadata(tmp_path / "half.parquet")
+    assert meta["source_files"] == {} and meta["anonymisation"] == bare.attrs["anonymisation"]
 
 
 def test_hash_inputs_selects_exactly_the_files_the_build_reads(tmp_path):
@@ -680,7 +702,7 @@ def test_hash_inputs_selects_exactly_the_files_the_build_reads(tmp_path):
 
 def test_wide_to_frozen_end_to_end(capsys):
     out = preprocess_gva.wide_to_frozen(_fake_wide_df())
-    assert out.columns.tolist() == [ID, *FROZEN_FEATURES, *FROZEN_OUTCOMES]
+    assert out.columns.tolist() == [RAW_ID, *FROZEN_FEATURES, *FROZEN_OUTCOMES]   # raw id: not yet de-identified
     assert len(out) == 5                                   # EVERY admission kept, outcome or not
     assert out["d_dimer"].iloc[1] == 500.0                 # 0.5 mg/L -> ng/ml
     assert out["sex"].tolist()[:2] == [1.0, 0.0]
@@ -688,7 +710,7 @@ def test_wide_to_frozen_end_to_end(capsys):
     assert not out["med_hist_valv_heart_disease"].isna().any()
     assert out["EVT"].isin([0.0, 1.0]).all()
     assert all(out[c].dtype == "float64" for c in (*FROZEN_FEATURES, *FROZEN_OUTCOMES))
-    assert out[ID].is_unique
+    assert out[RAW_ID].is_unique
     # outcomes carried as recorded: row 3 has neither a 3-month death nor an mRS
     assert out["death_3m"].tolist()[:3] == [1.0, 0.0, 1.0] and np.isnan(out["death_3m"].iloc[3])
     assert out["mrs_3m"].tolist()[:3] == [1.0, 6.0, 3.0] and np.isnan(out["mrs_3m"].iloc[3])
@@ -734,8 +756,10 @@ def test_architecture_schema_mirrors_frozen_contract():
     from fed_stroke.dp.boost import FEATURE_RANGES
     from fed_stroke.schema import (FEATURE_COLS, FEATURE_UNITS, MISSING_SENTINEL, OUTCOME_COLS,
                                    SCHEMA_VERSION, TARGET_COL)
+    from fed_stroke.schema import ID_COL as ARCH_ID_COL
     assert list(FEATURE_COLS) == FROZEN_FEATURES
     assert list(OUTCOME_COLS) == FROZEN_OUTCOMES
+    assert ARCH_ID_COL == ID_COL == ID                # the de-identified id column, both copies
     assert TARGET_COL in FROZEN_OUTCOMES              # the label is one of the carried outcomes
     assert FEATURE_UNITS == FROZEN_UNITS
     assert preprocess_gva.SCHEMA_VERSION == SCHEMA_VERSION

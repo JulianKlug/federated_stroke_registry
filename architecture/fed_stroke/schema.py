@@ -18,15 +18,24 @@ Column ORDER is part of the contract: task.load_data_arrays emits X in FEATURE_C
 dp/boost.FEATURE_RANGES (asserted at import to carry the same keys in the same order) defines
 the DP bin grid per column index. Reordering silently remaps every persisted DP model.
 
-Freeze discipline: any change to the mirrored lists is a cross-site contract change — bump
-SCHEMA_VERSION here and DP_MODEL_FORMAT in dp/boost.py, and re-obtain partner sign-off.
+Freeze discipline: any change to the mirrored lists or to ID_COL is a cross-site contract change —
+bump SCHEMA_VERSION here (and DP_MODEL_FORMAT in dp/boost.py when a FEATURE column moves or
+changes), and re-obtain partner sign-off.
 """
 
 # Stamped into the node parquet metadata by preprocess_gva.write_node_parquet and compared by
 # the loader-side tooling. "frozen-v1" is the FIRST real frozen schema (41 features + 3 outcome
 # columns, 2026-09); the earlier 2-feature placeholder (Age (calc.), NIH on admission) was
-# never stamped anywhere.
-SCHEMA_VERSION = "frozen-v1"
+# never stamped anywhere. "frozen-v2" (2026-09-07): the id column becomes the de-identified
+# ID_COL below (preprocessing.anonymise: keyed pseudonym + admission ordinal; age floored,
+# jittered, top-coded at 90). Feature/outcome lists, units and ranges are unchanged, so
+# DP_MODEL_FORMAT is not bumped and the Shenzhen mapping needs no re-work — only the id name.
+SCHEMA_VERSION = "frozen-v2"
+
+# The node parquet's id column — mirror of preprocessing.mappings.frozen_schema.ID_COL. Loader
+# contract on its VALUE: '<patient_key>_<admission_key>', patient key = split('_')[0] (R3 dedup /
+# R4 split). The patient key is a keyed pseudonym, never a hospital identifier.
+ID_COL = "pseudo_admission_id"
 
 FEATURE_COLS = [
     "age",

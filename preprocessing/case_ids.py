@@ -4,8 +4,13 @@ The registry 'Case ID' is a 12-char string; chars [8:-4] are the patient ID,
 the last 4 are the EDS admission suffix. The EHR extraction carries the two
 parts as separate columns. All three helpers land on the same id format, which
 is also the loader-side derivation (architecture/fed_stroke/task.py).
+
+RAW_ID_COL names this raw, site-internal key. It exists only up to preprocessing.anonymise.
+anonymise_frozen, which replaces it by the pseudonymous mappings.frozen_schema.ID_COL.
 """
 import pandas as pd
+
+RAW_ID_COL = "case_admission_id"
 
 
 def create_ehr_case_identification_column(df):

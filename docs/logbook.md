@@ -246,7 +246,7 @@
   (provenance=example-halves — correct gating); two unseeded `train_dp_gbdt` runs on identical
   data produce different serialized models at identical reported ε. **The new rails caught two
   REAL data defects in the example halves on the first E2E attempt:** (1) half A contains an
-  exactly-duplicated `case_admission_id` (REDACTED, twice, same label) — the R3 loader
+  exactly-duplicated `case_admission_id` (id, twice, same label) — the R3 loader
   assertion fail-closed; dedup hardened to stable-sort + head(1) so exact-duplicate ids
   deterministically reduce to one row (regression test added). (2) Both halves contain missing
   features (NIH on admission: 84/1845 in A, 72/1829 in B; Age: 1 in B) — the R7 gate refuses
@@ -324,4 +324,25 @@
     real-data step; it is arm A of the 1.1.b sweep itself). **1.1.b may run on real
     frozen-schema Geneva data once those halves exist** (preprocessing track) — flip both
     nodes' data-provenance in pyproject [tool.fed_stroke.nodes] and run spec 1.1.b §6.5.
+
+- 2026-09-07 — **GVA node parquet de-identified (anon-v1); schema bumped to frozen-v2.**
+  `preprocessing.anonymise.anonymise_frozen` is the last step of `preprocess_gva.py`:
+  - id column renamed `case_admission_id` → `pseudo_admission_id` =
+    `HMAC-SHA256(key, patient_id)[:16]_<admission ordinal>`; the raw hospital id and the EDS
+    suffix never leave the build. The ordinal is the rank of the original id within the patient,
+    so R3's lexicographic tie-break keeps the same admission; R4 hashes the pseudonym. The
+    R3/R4 rule is unchanged (group key and tie-break still come from the id column), so the
+    signed remediation text (spec 1.1.a″ R3/R4) stays valid by reference. `DP_MODEL_FORMAT`
+    unchanged (features untouched). Shenzhen addendum: id column name only, no re-mapping.
+  - age = completed years + per-patient keyed jitter uniform in ±2 y (domain-separated HMAC
+    of the same key), clipped to [0, 90] (SPHN guidance v2.0 §5.1.9 / HIPAA §164.514(b)(2);
+    HRO Art. 25 lists date of birth and unique identifiers).
+  - key custody (HRO Art. 26 coded data): `--pseudonym-key` file of ≥ 32 random bytes, held by
+    the data provider OUTSIDE the repo and away from `--out` (the driver refuses otherwise);
+    never printed or stamped, only its sha256 fingerprint. **Immutable for the project
+    lifetime**: a lost or rotated key moves every patient's R4 DEV/HELD assignment.
+  - leak fixed: pandas wrote `df.attrs` into the parquet metadata (raw per-feature
+    `min_seen`/`max_seen`, the local build-log path); `write_node_parquet` now writes without
+    attrs and refuses a frame without the anonymisation stamp. Smoke report per-feature
+    `min`/`max` → `p05`/`p95`.
 

@@ -9,6 +9,7 @@ from flwr.app import Context
 
 from fed_stroke.schema import (
     FEATURE_COLS,
+    ID_COL,
     MISSING_SENTINEL,
     OUTCOME_COLS,
     TARGET_COL,
@@ -130,7 +131,7 @@ def dedup_one_row_per_patient(data, outcome):
 
     Rule (user decision, 2026-07-22): keep an admission whose label equals the patient's max
     outcome (matches the historical stratification reduction); among ties, keep the
-    lexicographically smallest case_admission_id. Exact-duplicate case_admission_id rows (the
+    lexicographically smallest id (schema.ID_COL). Exact-duplicate id rows (the
     registry contains e.g. one admission recorded twice, same id) tie on every key — the
     stable sort + head(1) then keeps the first such row deterministically, so the result is
     always EXACTLY one row per patient. Idempotent (deduping deduped data is a no-op), so
@@ -139,7 +140,7 @@ def dedup_one_row_per_patient(data, outcome):
     confound noise cost with a cohort change."""
     max_out = data.groupby('patient_id')[outcome].transform('max')
     candidates = data[data[outcome] == max_out]
-    return (candidates.sort_values('case_admission_id', kind='stable')
+    return (candidates.sort_values(ID_COL, kind='stable')
                       .groupby('patient_id', sort=False)
                       .head(1)
                       .sort_index())
@@ -165,7 +166,7 @@ def generate_splits(data, outcome, test_size, seed,
       cohort-dependent and precisely what breaks adjacency stability.
 
     Args:
-        data: input frame with case_admission_id, features, outcome.
+        data: input frame with the id column (schema.ID_COL), features, outcome.
         outcome: label column (drives the dedup rule; no longer used for stratification).
         test_size (float): validation fraction — a patient is in validation iff
             assign(pid) < 2^32 · test_size.
@@ -183,7 +184,8 @@ def generate_splits(data, outcome, test_size, seed,
         (including the derived patient_id).
     """
 
-    data['patient_id'] = data['case_admission_id'].apply(lambda x: x.split('_')[0])
+    # patient key = prefix of the node id: a keyed pseudonym since anon-v1 (preprocessing.anonymise)
+    data['patient_id'] = data[ID_COL].apply(lambda x: x.split('_')[0])
 
     # REMOVE-IF-NO-DP: missing features -> public sentinel (variant 1), for ALL arms alike.
     data = encode_missing_as_sentinel(data)
@@ -312,7 +314,7 @@ def _resolve_context_split(context: Context):
     data_df = pd.read_parquet(data_path)
 
     n_rows = len(data_df)
-    n_patients = data_df['case_admission_id'].str.split('_').str[0].nunique()
+    n_patients = data_df[ID_COL].str.split('_').str[0].nunique()
     # The parquet carries every cohort admission and all OUTCOME_COLS; the label is chosen in
     # fed_stroke.schema and the unlabelled rows are dropped ONCE inside resolve_run_split
     # (select_labelled_rows). Counted here up front so the loader log shows it.

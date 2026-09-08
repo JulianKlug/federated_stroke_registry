@@ -25,7 +25,7 @@ from fed_stroke.dp import DP_MODEL_FORMAT, DPBooster, per_site_tree_budget
 from fed_stroke.dp import ledger as dp_ledger
 from fed_stroke.dp.boost import FEATURE_RANGES, fixed_bin_edges
 from fed_stroke.dp.synthetic import assemble_site_frame, assemble_site_matrix
-from fed_stroke.schema import FEATURE_COLS, TARGET_COL
+from fed_stroke.schema import FEATURE_COLS, ID_COL, TARGET_COL
 from fed_stroke.server_app import derive_num_rounds
 
 TEMPLATE_PATH = (Path(__file__).resolve().parents[2]
@@ -44,7 +44,7 @@ LOCAL_EPOCHS = 1
 # --------------------------------------------------------------------------- #
 def _make_half(path, prefix, seed, n=60, positive_frac=0.35, n_missing=0):
     """Synthetic half parquet (test_baseline idiom): patient_id =
-    case_admission_id.split('_')[0], unique per row, disjoint across prefixes."""
+    id.split('_')[0], unique per row, disjoint across prefixes."""
     rng = np.random.RandomState(seed)
     age = rng.uniform(40, 90, n)
     nih = rng.uniform(0, 30, n)
@@ -617,7 +617,7 @@ def test_cohort_stats_counts_dedup(tmp_path):
     # two admissions for the same patient collapse to one row (R3 dedup)
     path = tmp_path / HALVES[0]
     df = _make_half(path, "A", seed=1, n=40)
-    dup = df.iloc[[0]].assign(case_admission_id="A0_2")
+    dup = df.iloc[[0]].assign(**{ID_COL: "A0_2"})
     pd.concat([df, dup], ignore_index=True).to_parquet(path)
     stats = dpsweep.cohort_stats([path], split_seed=42)
     assert stats[HALVES[0]]["raw_rows"] == 41

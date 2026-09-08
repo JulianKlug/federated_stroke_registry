@@ -6,6 +6,10 @@ Roadmap step 1.a.ii. Produces `out/geneva_half_A.parquet` and
 the patient level (no patient appears in both), stratified on the `3M Death`
 outcome, and deterministic under a fixed seed.
 
+SUPERSEDED by architecture/preprocessing/split_gva_halves.py: these halves carry
+the raw case_admission_id and fractional age — NOT de-identified. Never point a
+node at them.
+
 Run from the repo root: `python preprocessing/prepare_geneva_halves.py`.
 """
 import sys
@@ -18,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from preprocessing.case_ids import build_case_admission_id  # noqa: E402
+from preprocessing.case_ids import RAW_ID_COL, build_case_admission_id  # noqa: E402
 from preprocessing.splits import stratified_patient_split  # noqa: E402
 
 SOURCE_XLSX = Path(
@@ -58,7 +62,8 @@ def main() -> None:
         f"{n_post} unique cases remain."
     )
 
-    half_a, half_b = stratified_patient_split(df, seed=SEED, target_col=TARGET_COL)
+    half_a, half_b = stratified_patient_split(df, seed=SEED, target_col=TARGET_COL,
+                                              id_col=RAW_ID_COL)
 
     pids_a = set(half_a["case_admission_id"].str.split("_").str[0])
     pids_b = set(half_b["case_admission_id"].str.split("_").str[0])
