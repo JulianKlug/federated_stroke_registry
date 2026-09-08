@@ -23,9 +23,15 @@ import pandas as pd
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from preprocess_gva import REPO_ROOT, read_node_metadata, write_node_parquet  # noqa: E402
+from preprocess_gva import REPO_ROOT, read_node_metadata, sha256_of, write_node_parquet  # noqa: E402
+
+from fed_stroke.schema import TARGET_COL  # noqa: E402  — stratify on the training label
+from preprocessing.mappings.frozen_schema import ID_COL  # noqa: E402
+from preprocessing.splits import stratified_patient_split  # noqa: E402
 
 SPLIT_SEED = 42   # half-partition seed (same as the dev halves)
+NAN_OUTCOME_STRATUM = -1.0  # outcomes are >= 0; unlabelled patients form their own stratum
+STRAT_COL = "_strat_outcome"
 
 
 def split_patient_disjoint_halves(
@@ -47,7 +53,21 @@ def split_patient_disjoint_halves(
         reviewer B F9; one line, non-negotiable even though waived as a
         standalone check).
     """
-    raise NotImplementedError
+    # NaN outcomes get their own stratum instead of dropping the row: the frozen table keeps
+    # every cohort admission, and the label drop is loader-side only (fed_stroke.task).
+    df = df.copy()
+    df[STRAT_COL] = df[TARGET_COL].fillna(NAN_OUTCOME_STRATUM)
+
+    half_a, half_b = stratified_patient_split(df, seed=seed, target_col=STRAT_COL, id_col=ID_COL)
+    half_a = half_a.drop(columns=[STRAT_COL])
+    half_b = half_b.drop(columns=[STRAT_COL])
+
+    pids_a = set(half_a[ID_COL].str.split("_").str[0])
+    pids_b = set(half_b[ID_COL].str.split("_").str[0])
+    assert not pids_a & pids_b, (
+        f"halves share {len(pids_a & pids_b)} patients (Claim 9 / reviewer B F9)"
+    )
+    return half_a, half_b
 
 
 def main() -> None:
@@ -65,12 +85,12 @@ def main() -> None:
     df = pd.read_parquet(args.frozen)
     # frame attrs are not stored in a parquet: carry the source file's anonymisation stamp
     anonymisation = read_node_metadata(args.frozen)["anonymisation"]
+    source_files = {f"frozen/{args.frozen.name}": sha256_of(args.frozen)}
     half_a, half_b = split_patient_disjoint_halves(df, args.seed)
     for half, name in ((half_a, "geneva_half_A.parquet"),
                        (half_b, "geneva_half_B.parquet")):
         half.attrs["anonymisation"] = anonymisation
-        summary = write_node_parquet(half, args.out_dir / name,
-                                     source_files={})  # TODO: sha256 of --frozen
+        summary = write_node_parquet(half, args.out_dir / name, source_files=source_files)
         print(summary)
 
 
