@@ -394,3 +394,20 @@
   - **Revised ETA ≈ 6.6 days** (23h at 40 trees + 45h at 80 + 91h at 160), not the 3.6 days
     estimated from the 20-round run alone. Bounding knobs if this is too long: a custom
     `--grid` without the 160-tree axis (≈ 2.9 days), or `--max-trials`.
+
+- 2026-09-09 — **Sweep restart notes (1.1.a real run).** Yesterday's resumed driver was killed
+  with its launching shell ~2 min in and went unnoticed, so nothing ran for ~30h; relaunched
+  18:49 today under `setsid` (detached) — use that form for any multi-day driver.
+  - **A `--run-timeout` kill is a FALSE NEGATIVE, not a failed run.** Killing the `flwr run`
+    client does not stop the server-side run: trial 3 (5ae823cb23, 160 trees) was marked
+    DEGENERATE at the 900s cap yesterday, but the ServerApp finished and wrote
+    `final_model.json` at 13:05:54 — ~2 min after the client died. Today's `--resume` therefore
+    skipped that run and scored the orphaned model. Verified benign here: 160 trees in the
+    model, embedded `fed_run_config` total_trees=160 / depth 3 / eta 0.05, i.e. exactly the
+    trial's config, AUC 0.862 / 0.867. **The trap for later:** after a timeout, a subsequent
+    `--resume` silently adopts a model produced by a run the driver reported as failed. Benign
+    when the timeout was merely too tight (this case); NOT benign if the run was genuinely
+    hung/bad. After any timeout, either delete the trial-seed dir before resuming or verify the
+    model's tree count and embedded config, as done here.
+  - Timeout fix confirmed adequate: trial 3 seed2 ran 18:54→19:10 (~16 min) well inside the new
+    2400s cap, and would have been killed by the old 900s one.
