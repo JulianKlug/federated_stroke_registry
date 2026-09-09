@@ -363,7 +363,7 @@ python scripts/run_hpo.py \
     --max-trials 0 \                     # 0 = full grid; >0 = random subsample (escape hatch)
     --seed 0 \                           # RNG seed for the --max-trials random subsample (reproducible)
     --n-boot 0 \                         # OFFLINE bootstrap resamples during search (0 = skip, fast)
-    --run-timeout 900 \                  # per-run wall-clock cap (s); a run exceeding it is killed → degenerate repeat (§4.4 Flow)
+    --run-timeout 2400 \                 # per-run wall-clock cap (s); a run exceeding it is killed → degenerate repeat (§4.4 Flow)
     --out-dir out/hpo \                  # resolved to an ABSOLUTE path before any run (§4.4 Flow)
     --resume \                           # skip any (trial, seed) whose final_model.json already exists
     --dry-run                            # print the trial plan + run count, launch nothing
@@ -429,7 +429,7 @@ Flow:
      federation lost a SuperNode mid-sweep **blocks indefinitely** waiting for node
      availability — it does not exit non-zero. Without a cap, the first dead node
      stalls the whole overnight sweep and `--resume` cannot help (nothing crashed).
-     `--run-timeout` (default 900s ≫ a healthy run) bounds every run; on
+     `--run-timeout` (default 2400s ≫ a healthy run) bounds every run; on
      `TimeoutExpired` the driver **kills the process group** (the run's children,
      mirroring `run_local_federation.sh`'s `kill -- -pgid`), marks that repeat
      degenerate, logs it, and continues.

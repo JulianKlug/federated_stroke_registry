@@ -377,3 +377,20 @@
     bounding knobs. **Next deliberate acts (user):** launch the 1.1.a real sweep
     (`scripts/run_hpo.py --strategy bagging --data-provenance real-frozen-schema`), then
     1.1.b with `--operator` + `--gate-ack` (spends real ε; ledger composes across re-runs).
+
+- 2026-09-08 — **1.1.a real sweep launched (full grid, bagging); `--run-timeout` default was a
+  trap.** 324 cells × 3 seeds = 972 search runs on the real frozen halves, provenance
+  `real-frozen-schema`, no ε spent. Canary passed; artifacts in `out/hpo/`, log
+  `out/hpo/sweep_real_20260908.log`.
+  - **Finding:** the spec's `--run-timeout` default of 900s rested on "≫ a healthy run", which
+    is false on real Geneva data. Measured per-run wall-clock: 40 trees ≈ 4m20s, 80 ≈ 8m25s,
+    160 ≈ ~17 min. The cap therefore killed every 160-tree run and recorded it DEGENERATE —
+    silently amputating a third of the grid (the whole `total-trees=160` axis) rather than
+    failing loudly. Caught on the first 160-tree cell (trial 3, 5ae823cb23). Default raised to
+    2400s (`RUN_TIMEOUT_SECONDS` in scripts/run_hpo.py) and the two spec mentions updated;
+    **re-measure before the 1.3.b′ cross-site re-run** — the international link is slower.
+  - Sweep restarted with `--resume --run-timeout 2400` (the 8 banked runs are skipped, the
+    DEGENERATE one re-fires) and detached via `setsid` so it outlives the launching shell.
+  - **Revised ETA ≈ 6.6 days** (23h at 40 trees + 45h at 80 + 91h at 160), not the 3.6 days
+    estimated from the 20-round run alone. Bounding knobs if this is too long: a custom
+    `--grid` without the 160-tree axis (≈ 2.9 days), or `--max-trials`.

@@ -44,6 +44,13 @@ from fed_stroke import hpo  # noqa: E402
 from fed_stroke.baseline import score_booster_on_half  # noqa: E402
 from fed_stroke.task import HOLDOUT_PARTITION_SEED  # noqa: E402
 
+# Per-run wall-clock cap. Must stay well ABOVE the slowest healthy run, or the cap silently
+# amputates a whole grid axis: on the real Geneva halves the default grid's 160-tree cells take
+# ~17 min (40 trees ~4m20s, 80 ~8m25s), so the original 900s killed every 160-tree run and
+# recorded it DEGENERATE. Re-measure before the cross-site re-run (1.3.b′) — the international
+# link is slower still.
+RUN_TIMEOUT_SECONDS = 2400
+
 
 # scoring: load a saved model, score both halves offline (§3.4)
 # --------------------------------------------------------------------------- #
@@ -189,7 +196,7 @@ def _parse_args():
                    help="RNG seed for the --max-trials subsample (reproducible)")
     p.add_argument("--n-boot", type=int, default=0,
                    help="OFFLINE bootstrap resamples during search (0 = skip, fast)")
-    p.add_argument("--run-timeout", type=float, default=900,
+    p.add_argument("--run-timeout", type=float, default=RUN_TIMEOUT_SECONDS,
                    help="per-run wall-clock cap (s); an exceeding run is killed")
     p.add_argument("--out-dir", default="out/hpo",
                    help="artifact dir; relative resolves against the repo root")
