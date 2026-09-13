@@ -7,29 +7,18 @@ pattern as GVA_TO_SHENZEN / UNITS: reviewable, diffable, no logic).
 
 The training LABEL is deliberately NOT part of this contract. The site table carries every
 cohort admission with all FROZEN_OUTCOMES (missing outcomes stay NaN — no row is dropped for
-an outcome); fed_stroke.schema picks TARGET_COL among the frozen outcomes (plus an optional
-binarization rule, e.g. mRS ≤ 2) and the loader drops the unlabelled rows at load time. A
-label change is therefore a training-config change, never a re-run of either site's
-preprocessing.
-
-`fed_stroke.schema.FEATURE_COLS` / `OUTCOME_COLS` / `FEATURE_UNITS` are a literal mirror of
-these (the fed_stroke wheel ships without this package); architecture/tests/
-test_preprocess_gva.py asserts the two copies are identical and architecture/preprocessing/
-preprocess_gva.py warns loudly at build time if they ever drift.
+an outcome); 
 
 The frozen schema dictates the UNITS too: `FROZEN_UNITS` is the unit of record per frozen
 column (mirrors fed_stroke.schema.FEATURE_UNITS), and `FROZEN_RANGES` is the public,
-data-independent plausibility range per feature in those units — a literal mirror of
-fed_stroke.dp.boost.FEATURE_RANGES, the DP bin grid (asserted identical by
-architecture/tests/test_preprocess_gva.py). preprocessing.frozen_table.nullify_out_of_range
-applies FROZEN_RANGES after the rename: a value outside its range becomes NaN and is counted
+plausibility range per feature in those units 
+preprocessing.frozen_table.nullify_out_of_range applies FROZEN_RANGES after the rename: a value outside its range becomes NaN and is counted
 per feature for the smoke report; a feature out of range wholesale fails the build.
 Every site's unit handling must land in FROZEN_UNITS: preprocessing.frozen_table.
 convert_to_frozen_units resolves each row's observed unit label through
 mappings.unit_aliases.UNIT_ALIASES (label → factor, keyed by frozen unit), falling back to the
 site's declared units for columns without a per-row label (e.g. mappings.gva_encodings.
-GVA_DECLARED_UNITS). mappings.unit_conversions.UNIT_CONVERSIONS is NOT on this path — it
-targets Shenzhen units for the comparison plots.
+GVA_DECLARED_UNITS). 
 
 Apply order in the site preprocessing (preprocessing.frozen_table, driven by
 architecture/preprocessing/preprocess_gva.wide_to_frozen):
@@ -62,9 +51,7 @@ SCHEMA_VERSION = "frozen-v2"
 # never a hospital identifier. The raw '<patient_id>_<eds4>' key (case_ids.RAW_ID_COL) exists
 # only inside a site's preprocessing. Mirrored by fed_stroke.schema.ID_COL.
 ID_COL = "pseudo_admission_id"
-# The site-internal admission key, BEFORE de-identification: '<patient_id>_<admission suffix>'.
-# Lives here (not in the Geneva-only case_ids module) because every site's frozen_table pipeline
-# carries it up to anonymise_frozen, which replaces it by ID_COL.
+# The site-internal admission key, BEFORE de-identification
 RAW_ID_COL = "case_admission_id"
 BINARY_UNIT_PREFIX = "binary"   # 'binary' or 'binary (<convention>)': encoded, never unit-converted
 UNITLESS = "no unit"            # scores / ratios: a missing unit label is expected, not a warning
@@ -194,12 +181,7 @@ def is_binary_unit(unit: str) -> bool:
     return unit.startswith(BINARY_UNIT_PREFIX)
 
 
-# Public, data-independent plausibility range per frozen feature, in FROZEN_UNITS — a LITERAL
-# MIRROR of fed_stroke.dp.boost.FEATURE_RANGES (the DP bin grid; same keys, same ORDER). Kept
-# in both layers because the fed_stroke wheel ships without this package; the equality is
-# asserted in architecture/tests/test_preprocess_gva.py. A value outside its range is not
-# representable in the DP grid (below lo it falls into the missing bin, above hi into the top
-# bin), so these are also the bounds preprocessing.frozen_table.nullify_out_of_range applies.
+# Public, data-independent plausibility range per frozen feature, in FROZEN_UNITS 
 # Editing a range is a cross-site contract change: change BOTH copies, re-obtain sign-off.
 FROZEN_RANGES: dict[str, tuple[float, float]] = {
     "age": (0.0, 120.0),                        # years
@@ -339,7 +321,7 @@ SHENZHEN_TO_FROZEN: dict[str, str] = {
     "hs-CRP": "CRP",  # mg/l
     "INR": "INR",  # no unit
     "Fibrinogen": "fibrinogen",  # g/l
-    "D-dimer": "d_dimer",  # ng/ml
+    "D-dimer": "d_dimer",  # mg/L (raw; -> ng/ml)
     "HbA1c": "hba1c",  # %
     "ALT": "alt",  # U/l
     "LDL-C": "LDL",  # mmol/l

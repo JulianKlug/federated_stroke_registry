@@ -1,9 +1,5 @@
 """Shenzhen preprocessing: the site export → the frozen-schema table the Shenzhen node trains on.
 
-SKELETON. Every function marked TODO(shenzhen) raises NotImplementedError and is the partner's
-to write; everything else is pre-wired and must NOT be edited — it is the same shared code
-Geneva runs, and a local change there is undetectable from the smoke report
-(docs/specs/1_3_shenzhen_preprocessing_handoff.md, Decision D1).
 
 Contract with the architecture layer — identical to Geneva's:
 - one row per admission — EVERY cohort admission, whatever its outcome; columns EXACTLY
@@ -20,14 +16,6 @@ Contract with the architecture layer — identical to Geneva's:
   out of range wholesale fails the build (unit / mapping bug);
 - NO one-row-per-patient dedup, NO train/valid split, NO sentinel encoding, NO label drop —
   all four are loader-side (fed_stroke/task.py).
-
-Two artifacts are produced. The parquet and the build log STAY at the site; the smoke report
-(<stem>_smoke_report.json, aggregate-only — counts, medians, percentiles, missing rates) is
-the ONLY file that crosses the border.
-
-Unlike preprocess_gva.py this script does not import fed_stroke: the partner bundle carries no
-architecture layer, so the schema version stamped is the preprocessing-side contract
-(preprocessing.mappings.SCHEMA_VERSION).
 
 Usage:
     python preprocess_shenzhen.py \
@@ -86,9 +74,6 @@ from preprocessing.node_parquet import PROVENANCE, sha256_of, write_node_parquet
 # in preprocessing.registry_cohort). These are the raw names SHENZHEN_TO_FROZEN expects back.
 TIMING_COLS = ("ODT", "ONT", "DNT", "OPT")
 
-# The raw name SHENZHEN_TO_FROZEN maps onto `wake_up_stroke`.
-WAKE_UP_RAW_COL = "Wake-up Stroke"
-
 DEFAULT_BUILD_LOG = REPO_ROOT / "out" / "shenzhen_frozen.build.log"
 
 
@@ -107,7 +92,7 @@ def load_shenzhen_export(export_path: Path) -> pd.DataFrame:
 def build_shenzhen_cohort(raw: pd.DataFrame, exclusions: list[dict]) -> pd.DataFrame:
     """Apply the agreed cohort filter, recording EVERY stage in `exclusions`.
 
-    Matches Geneva's definition (see the hand-off spec §4 H6): exact-duplicate rows dropped,
+    Matches Geneva's definition: exact-duplicate rows dropped,
     ischemic stroke only, one index admission per hospital stay. Use
     preprocessing.build_log.record_exclusion(exclusions, stage, reason, before, after) per
     stage — the build log and the smoke report both read that chain, and it is how the two
@@ -118,34 +103,13 @@ def build_shenzhen_cohort(raw: pd.DataFrame, exclusions: list[dict]) -> pd.DataF
     raise NotImplementedError("TODO(shenzhen): cohort filter + exclusion chain")
 
 
-def build_raw_case_admission_id(df: pd.DataFrame) -> pd.Series:
-    """The site-internal admission key: '<patient id>_<admission suffix>', unique per row.
-
-    The patient part must be STABLE across a patient's admissions and must contain no '_':
-    anonymise_frozen pseudonymises on `id.split('_')[0]`, and the loader derives the patient
-    key the same way for its dedup and its patient-disjoint split. Two admissions of one
-    patient that get different patient parts break that disjointness silently.
-    """
-    raise NotImplementedError("TODO(shenzhen): raw case_admission_id")
-
-
-def derive_wake_up_stroke(df: pd.DataFrame) -> pd.Series:
-    """Wake-up stroke as raw values SHENZHEN_BINARY_ENCODINGS can encode (or already {0, 1}).
-
-    Geneva derives it from last-known-well vs onset; if the export carries the flag directly,
-    return that column unchanged.
-    """
-    raise NotImplementedError("TODO(shenzhen): wake_up_stroke")
-
 
 def derive_timings(df: pd.DataFrame) -> pd.DataFrame:
     """The four timing intervals in MINUTES, as columns named exactly TIMING_COLS.
 
     ODT onset→door, ONT onset→needle, DNT door→needle, OPT onset→puncture. Unknown onset (and
-    any interval it feeds) is NaN, never 0. Estimated-onset handling must match the rule agreed
-    in the hand-off questionnaire (Q5) — an unmatched convention makes the two sites' timing
-    distributions incomparable. Negative or implausible values may be left as they are:
-    nullify_out_of_range catches them against FROZEN_RANGES and counts them.
+    any interval it feeds) is NaN, never 0. 
+    Negative or implausible values may be left as they are: nullify_out_of_range catches them against FROZEN_RANGES and counts them.
     """
     raise NotImplementedError("TODO(shenzhen): ODT / ONT / DNT / OPT derivation")
 
@@ -153,10 +117,8 @@ def derive_timings(df: pd.DataFrame) -> pd.DataFrame:
 def derive_outcomes(df: pd.DataFrame) -> pd.DataFrame:
     """The three outcome columns, under the raw names added to SHENZHEN_TO_FROZEN (Q1).
 
-    mrs_3m (0-6), death_3m, death_in_hospital. Reconcile them the way Geneva does
-    (preprocessing.registry_cohort.preprocess_outcome, the OPSUM rules): in-hospital death
-    implies mrs_3m = 6 and death_3m = 1; mrs_3m == 6 implies death_3m = 1; a known mrs_3m != 6
-    with unknown death_3m implies death_3m = 0. Not recorded stays NaN — no row is dropped.
+    mrs_3m (0-6), death_3m, death_in_hospital. 
+    Not recorded stays NaN — no row is dropped.
     """
     raise NotImplementedError("TODO(shenzhen): outcome columns + reconciliation")
 
@@ -171,9 +133,7 @@ def hash_inputs(export_paths: list[Path]) -> dict[str, str]:
 def assemble_wide(cohort: pd.DataFrame) -> pd.DataFrame:
     """Cohort + the derived columns → the wide raw frame wide_to_frozen consumes."""
     wide = cohort.copy()
-    wide[RAW_ID_COL] = build_raw_case_admission_id(cohort)
-    wide[WAKE_UP_RAW_COL] = derive_wake_up_stroke(cohort)
-
+  
     timings = derive_timings(cohort)
     _check_derived(timings, TIMING_COLS, "derive_timings")
     outcomes = derive_outcomes(cohort)
@@ -200,9 +160,7 @@ def _check_derived(df: pd.DataFrame, expected: tuple[str, ...], who: str) -> Non
 
 
 def wide_to_frozen(wide_df: pd.DataFrame) -> pd.DataFrame:
-    """The wide raw frame → the frozen-schema table. Binds the Shenzhen mapping tables to the
-    site-agnostic steps in preprocessing.frozen_table, in the contract order. Byte-for-byte the
-    same step sequence as preprocess_gva.wide_to_frozen — only the tables differ."""
+    """The wide raw frame → the frozen-schema table."""
     # 1. per-row unit check into FROZEN_UNITS (raw names; binaries skipped)
     df, unit_check = convert_to_frozen_units(
         wide_df, SHENZHEN_TO_FROZEN, FROZEN_UNITS, SHENZHEN_DECLARED_UNITS, UNIT_ALIASES

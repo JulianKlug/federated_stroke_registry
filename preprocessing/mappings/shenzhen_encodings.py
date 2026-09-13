@@ -1,21 +1,13 @@
 """Shenzhen raw-value vocabularies and declared units feeding the frozen table (mapping-as-data).
 
-SKELETON — every table below is empty and must be filled by the Shenzhen team from their own
-export. Sibling of mappings.gva_encodings, same shape, same rules:
-
 - applied on RAW column names, BEFORE the SHENZHEN_TO_FROZEN rename, by
   preprocessing.frozen_table (encode_binaries / convert_to_frozen_units);
 - any raw value not listed makes encode_binaries RAISE — never a silent NaN;
 - NaN stays NaN unless the column is in SHENZHEN_BINARY_FILLNA.
 
-Two encoding conventions are Geneva decisions to REPRODUCE, not to re-choose (2026-09-02):
-`sex: 1 = female`, and thrombolysis started before arrival (drip-and-ship) counts as IVT.
-
-Geneva asserts its tables at import. This module cannot: the tables are empty by design until
-the partner fills them, and an import-time failure would block every other import of
-`preprocessing.mappings`. `validate_shenzhen_encodings()` runs the same checks on demand —
-preprocess_shenzhen.main calls it first, so an incomplete build reports the full to-do list
-instead of failing one column at a time.
+encoding conventions:
+- `sex: 1 = female`
+- thrombolysis started before arrival (drip-and-ship) counts as IVT.
 """
 from __future__ import annotations
 
@@ -28,19 +20,23 @@ from .frozen_schema import (
 )
 
 # TODO(shenzhen): raw value -> {0, 1} per binary column, incl. the binary outcomes.
-# Questionnaire Q2. Example shape: {"Sex": {"F": 1, "M": 0}, "Prior hypertension": {"是": 1, "否": 0}}
+# Example shape: {"Sex": {"F": 1, "M": 0}, "Prior hypertension": {"是": 1, "否": 0}}
 SHENZHEN_BINARY_ENCODINGS: dict[str, dict[str, int]] = {}
 
-# TODO(shenzhen): columns where a BLANK means "no" (0), not "unknown". Questionnaire Q3.
+# TODO(shenzhen): columns where a BLANK means "no" (0), not "unknown". 
 SHENZHEN_BINARY_FILLNA: dict[str, int] = {}
 
 # TODO(shenzhen): binary raw columns already exported as {0, 1} (skip encode_binaries).
 SHENZHEN_PRE_ENCODED_BINARIES: tuple[str, ...] = ()
 
 # TODO(shenzhen): unit of record per NUMERIC raw column that carries no per-row unit label.
-# Questionnaire Q6. These are the site's DECLARED units; convert_to_frozen_units resolves them
 # through UNIT_ALIASES into FROZEN_UNITS, so a wrong entry silently rescales a feature.
-SHENZHEN_DECLARED_UNITS: dict[str, str] = {}
+SHENZHEN_DECLARED_UNITS: dict[str, str] = {
+    # mg/L -> ng/ml is prefix algebra (x 1e3); the ASSAY convention is not. If Shenzhen
+    # reports DDU where Geneva reports FEU (FEU ~ 2 x DDU), a residual ~2x survives this
+    # conversion — a sign-off question, not expressible in UNIT_ALIASES.
+    "D-dimer": "mg/L",
+}
 
 
 def _binary_raw_columns() -> set[str]:
