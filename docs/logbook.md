@@ -411,3 +411,30 @@
     model's tree count and embedded config, as done here.
   - Timeout fix confirmed adequate: trial 3 seed2 ran 18:54→19:10 (~16 min) well inside the new
     2400s cap, and would have been killed by the old 900s one.
+
+- 2026-09-12 — **Shenzhen preprocessing hand-off prepared (v1.3 precursor).** Spec
+  `docs/specs/1_3_shenzhen_preprocessing_handoff.md` enumerates the nine contract holes
+  blocking the partner's `preprocess_shenzhen.py`, the shippable bundle, and W1–W14. Partner
+  questionnaire (Q1–Q8) and implementation checklist in `docs/handoff/`.
+  - **Blocking unknown:** `SHENZHEN_TO_FROZEN` has no source for `IVT`, `EVT` or ANY of the
+    three outcomes. If Shenzhen has no 3-month follow-up, `TARGET_COL = death_3m` is not
+    reachable cross-site and the label decision (roadmap "pick the primary label", still
+    unchecked) reopens. Q1.1 is the first question to get answered.
+  - **Silent-divergence risks named:** D-dimer FEU vs DDU (factor ~2, lands inside
+    `FROZEN_RANGES` — no error, just a different variable), mass↔molar lab units (deliberately
+    inexpressible in `unit_aliases`, so these fail loudly — good), and the timing derivations
+    (ODT/ONT/DNT/OPT are derived at both sites, so the estimated-onset convention must match).
+  - **Landed (356 tests green):** W1 — `smoke_report` / `write_node_parquet` /
+    `read_node_metadata` / `sha256_of` extracted from the Geneva-named `preprocess_gva.py` into
+    site-agnostic `preprocessing/node_parquet.py` (Geneva keeps its own `hash_inputs`); W2 —
+    `RAW_ID_COL` and `SCHEMA_VERSION` join the contract in `mappings/frozen_schema.py` (so the
+    partner bundle stamps a parquet without importing `fed_stroke`), `read_pseudonym_key` moves
+    to `anonymise.py`. `SCHEMA_VERSION` now has three mirrors, all asserted equal by
+    `test_architecture_schema_mirrors_frozen_contract`.
+  - **Skeletons shipped:** `architecture/preprocessing/preprocess_shenzhen.py` (six
+    `NotImplementedError` site stubs, the seven shared steps pre-wired) and
+    `preprocessing/mappings/shenzhen_encodings.py` (four empty tables +
+    `validate_shenzhen_encodings()`, which reports all 44 gaps in one message).
+  - **Open for us:** D3 all-NaN feature column policy (untested today through
+    `finalize_frozen_table` → `smoke_report`'s `allow_nan=False`), D5 the label, and W13 — no
+    script compares two smoke reports against the roadmap's divergence gates yet.

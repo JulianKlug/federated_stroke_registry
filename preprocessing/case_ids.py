@@ -10,7 +10,7 @@ anonymise_frozen, which replaces it by the pseudonymous mappings.frozen_schema.I
 """
 import pandas as pd
 
-RAW_ID_COL = "case_admission_id"
+from .mappings.frozen_schema import RAW_ID_COL  # noqa: F401  — re-export, defined with the contract
 
 
 def create_ehr_case_identification_column(df):

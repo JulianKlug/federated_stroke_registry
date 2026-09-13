@@ -11,6 +11,8 @@ from .frozen_schema import (
     FROZEN_UNITS,
     GVA_TO_FROZEN,
     ID_COL,
+    RAW_ID_COL,
+    SCHEMA_VERSION,
     SHENZHEN_TO_FROZEN,
     UNITLESS,
     base_unit,
@@ -25,6 +27,13 @@ from .gva_encodings import (
     GVA_REGISTRY_NUMERIC_COLS,
 )
 from .gva_to_shenzen import GVA_TO_SHENZEN
+from .shenzhen_encodings import (
+    SHENZHEN_BINARY_ENCODINGS,
+    SHENZHEN_BINARY_FILLNA,
+    SHENZHEN_DECLARED_UNITS,
+    SHENZHEN_PRE_ENCODED_BINARIES,
+    validate_shenzhen_encodings,
+)
 from .unit_aliases import UNIT_ALIASES, normalize_unit_label
 from .unit_conversions import UNIT_CONVERSIONS
 from .units import UNITS
@@ -32,13 +41,16 @@ from .units import UNITS
 __all__ = [
     # frozen contract
     "FROZEN_FEATURES", "FROZEN_OUTCOMES", "FROZEN_OUTCOME_RANGES", "FROZEN_RANGES",
-    "FROZEN_UNITS", "ID_COL", "UNITLESS", "base_unit", "is_binary_unit",
-    "validate_frozen_columns",
+    "FROZEN_UNITS", "ID_COL", "RAW_ID_COL", "SCHEMA_VERSION", "UNITLESS", "base_unit",
+    "is_binary_unit", "validate_frozen_columns",
     # per-site raw -> frozen
     "GVA_TO_FROZEN", "SHENZHEN_TO_FROZEN",
     # Geneva vocabularies / declared units
     "GVA_BINARY_ENCODINGS", "GVA_BINARY_FILLNA", "GVA_DECLARED_UNITS",
     "GVA_PRE_ENCODED_BINARIES", "GVA_REGISTRY_NUMERIC_COLS",
+    # Shenzhen vocabularies / declared units (skeleton — filled by the partner)
+    "SHENZHEN_BINARY_ENCODINGS", "SHENZHEN_BINARY_FILLNA", "SHENZHEN_DECLARED_UNITS",
+    "SHENZHEN_PRE_ENCODED_BINARIES", "validate_shenzhen_encodings",
     # units
     "UNIT_ALIASES", "normalize_unit_label", "UNITS",
     # legacy comparison-plot helpers (not on the frozen path)

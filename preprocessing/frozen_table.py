@@ -13,8 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .case_ids import RAW_ID_COL
-from .mappings.frozen_schema import UNITLESS, base_unit, is_binary_unit
+from .mappings.frozen_schema import RAW_ID_COL, UNITLESS, base_unit, is_binary_unit
 from .mappings.unit_aliases import normalize_unit_label
 
 

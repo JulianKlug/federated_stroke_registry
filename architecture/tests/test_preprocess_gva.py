@@ -32,6 +32,7 @@ from preprocessing.frozen_table import (  # noqa: E402
     rename_to_frozen,
     select_mapped_columns,
 )
+from preprocessing.mappings.frozen_schema import SCHEMA_VERSION as FROZEN_SCHEMA_VERSION  # noqa: E402
 from preprocessing.mappings import (  # noqa: E402
     FROZEN_FEATURES,
     FROZEN_OUTCOME_RANGES,
@@ -762,7 +763,7 @@ def test_architecture_schema_mirrors_frozen_contract():
     assert ARCH_ID_COL == ID_COL == ID                # the de-identified id column, both copies
     assert TARGET_COL in FROZEN_OUTCOMES              # the label is one of the carried outcomes
     assert FEATURE_UNITS == FROZEN_UNITS
-    assert preprocess_gva.SCHEMA_VERSION == SCHEMA_VERSION
+    assert preprocess_gva.SCHEMA_VERSION == SCHEMA_VERSION == FROZEN_SCHEMA_VERSION
     # DP bin grid: same keys in the same ORDER (column index == feature), every lower bound
     # above the missing sentinel, binaries exactly (0, 1) — and the preprocessing-side mirror
     # FROZEN_RANGES is identical, pair for pair and in order (edit both copies together)

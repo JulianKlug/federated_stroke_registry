@@ -52,10 +52,20 @@ contract change — bump fed_stroke SCHEMA_VERSION and re-obtain partner sign-of
 from __future__ import annotations
 
 # --- The frozen contract -----------------------------------------------------------
+# Version of THIS contract, stamped into every node parquet by preprocessing.node_parquet.
+# Mirrored by fed_stroke.schema.SCHEMA_VERSION (the wheel ships without this package); the
+# architecture tests assert the two agree. Bump on any FROZEN_FEATURES / FROZEN_OUTCOMES /
+# FROZEN_UNITS / FROZEN_RANGES / ID_COL change, and re-obtain partner sign-off.
+SCHEMA_VERSION = "frozen-v2"
+
 # The node parquet's id column: '<patient pseudonym>_<admission ordinal>' (preprocessing.anonymise),
 # never a hospital identifier. The raw '<patient_id>_<eds4>' key (case_ids.RAW_ID_COL) exists
 # only inside a site's preprocessing. Mirrored by fed_stroke.schema.ID_COL.
 ID_COL = "pseudo_admission_id"
+# The site-internal admission key, BEFORE de-identification: '<patient_id>_<admission suffix>'.
+# Lives here (not in the Geneva-only case_ids module) because every site's frozen_table pipeline
+# carries it up to anonymise_frozen, which replaces it by ID_COL.
+RAW_ID_COL = "case_admission_id"
 BINARY_UNIT_PREFIX = "binary"   # 'binary' or 'binary (<convention>)': encoded, never unit-converted
 UNITLESS = "no unit"            # scores / ratios: a missing unit label is expected, not a warning
 

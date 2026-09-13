@@ -30,12 +30,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from .case_ids import RAW_ID_COL
-from .mappings.frozen_schema import ID_COL
+from .mappings.frozen_schema import ID_COL, RAW_ID_COL
 
 AGE_COL = "age"
 AGE_TOP_CODE_YEARS = 90.0          # SPHN §5.1.9 / HIPAA §164.514(b)(2): > 89 -> "90+"
@@ -163,3 +163,15 @@ def anonymise_frozen(df: pd.DataFrame, key: bytes) -> pd.DataFrame:
         },
     }
     return out
+
+
+def read_pseudonym_key(key_path, out_path, repo_root) -> bytes:
+    """The data provider's pseudonym key. Refuses a key stored inside the repo or next to the
+    artefact — it would travel with them. Length is checked by _check_key."""
+    key_path = Path(key_path).resolve()
+    forbidden = (Path(repo_root).resolve(), Path(out_path).resolve().parent)
+    if any(root == key_path or root in key_path.parents for root in forbidden):
+        raise ValueError(
+            f"pseudonym key {key_path} must live outside the repo and away from --out's directory"
+        )
+    return key_path.read_bytes()
