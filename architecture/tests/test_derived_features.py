@@ -63,3 +63,12 @@ def test_resolve_run_split_derives_before_the_sentinel(holdout_frac):
     both = pd.concat([train_df, valid_df])
     assert set(DERIVED_COLS) <= set(both.columns)
     assert set(both[NLR]) == {2.0, MISSING_SENTINEL}
+
+
+def test_sentinel_operand_fails_loudly():
+    """MISSING_SENTINEL is not a count. -1.0 / 2.0 = -0.5 reads as a measurement, and the
+    parquet contract (FROZEN_RANGES nullifies anything outside 0-100 G/l) means a sentinel
+    operand can ONLY mean the derivation ran after encode_missing_as_sentinel."""
+    df = pd.DataFrame({NEUTROPHILS: [MISSING_SENTINEL, 6.0], LYMPHOCYTES: [2.0, 3.0]})
+    with pytest.raises(ValueError, match="sentinel"):
+        task.add_derived_features(df)

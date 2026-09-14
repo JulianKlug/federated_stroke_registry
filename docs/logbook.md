@@ -454,9 +454,18 @@
   - Placement is load-bearing: `generate_splits` runs twice in the hold-out modes and its
     sentinel encoding rewrites a missing count as `MISSING_SENTINEL`, so deriving there would
     read −1/−1 as a ratio of 1.0. Lymphocyte count 0 → NaN (no ratio), never ±inf.
+  - **The missing rule is now enforced, not just documented.** `nlr` is defined only where both
+    counts are real measurements (39.2 % / 24.9 % missing on half A, so this decides ~2 rows in
+    5): a NaN operand propagates, and a sentinel operand RAISES. The old code caught −1/−1 by
+    accident (the `lymphocytes > 0` mask) but let −1/2 through as −0.5 — a negative "ratio"
+    inside no plausible range yet indistinguishable from a measurement to the learner. A −1.0
+    count cannot come from a node parquet (`FROZEN_RANGES` nullifies outside 0–100 / 0–50 G/l),
+    so it can only mean the derivation ran after the encoding: an ordering bug, failed closed.
   - `DP_MODEL_FORMAT` `dp-gbdt-v3` → `v4`: a v3 artifact's 41 feature_ranges and tree feature
     indices are not interpretable against 42-column X. `FEATURE_RANGES["nlr"] = (0, 100)`.
   - Real-data check (Geneva halves, inside-boundary): median NLR 3.4 / p95 15.3 / max 79.6,
     zero lymphocyte counts none, 39–42 % missing (driven by `neutrophil_count` availability).
     Quick pooled XGB on half A: valid AUC 0.837, `nlr` 8th of 30 used features by gain.
-  - Tests: `tests/test_derived_features.py` (6); suite 362 green.
+  - Tests: `tests/test_derived_features.py` (7); suite 356 green (docker smoke not run;
+    `test_secure_topology::test_connection_generation_merges_not_truncates` fails on `main`
+    too — `run_local_federation.sh write-config` exits 2, unrelated).

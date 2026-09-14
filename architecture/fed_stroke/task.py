@@ -91,14 +91,17 @@ def add_derived_features(data):
     frozen parquet contract changing. Always recomputed, never read from the parquet: a column
     of that name already in the table is authoritative nowhere.
 
-    nlr = neutrophil_count / lymphocyte_count. A lymphocyte count of 0 gives no ratio rather
-    than an infinite one -> NaN, i.e. "not recorded", which the sentinel encoding then handles
-    like any other missing value. A missing operand propagates to NaN the same way.
+    nlr = neutrophil_count / lymphocyte_count, defined ONLY where both counts are real
+    measurements. A missing operand propagates to NaN, and a lymphocyte count of 0 gives no
+    ratio rather than an infinite one -> NaN, i.e. "not recorded", which the sentinel encoding
+    then handles like any other missing value. Not a corner case at GVA scale: on half A
+    neutrophil_count is 39.2% missing and lymphocyte_count 24.9%.
 
     Per-record and data-independent (each row's value depends only on that row), so the DP
     adjacency argument is untouched — same standing as encode_missing_as_sentinel. Called ONCE
-    per load path, at the top of resolve_run_split: after encode_missing_as_sentinel has run,
-    a missing count reads as MISSING_SENTINEL and the ratio would silently become 1.0.
+    per load path, at the top of resolve_run_split, and REFUSES sentinel-encoded operands: run
+    after encode_missing_as_sentinel, -1.0 / -1.0 would read as a ratio of 1.0 and -1.0 / 2.0
+    as -0.5 — both indistinguishable from a measurement.
     """
     missing = [col for col in (NEUTROPHILS, LYMPHOCYTES) if col not in data.columns]
     if missing:
@@ -110,6 +113,22 @@ def add_derived_features(data):
     data = data.copy()
     neutrophils = pd.to_numeric(data[NEUTROPHILS], errors="raise").astype("float64")
     lymphocytes = pd.to_numeric(data[LYMPHOCYTES], errors="raise").astype("float64")
+
+    # Fail-closed ordering guard. MISSING_SENTINEL is not a count: the node parquet nullifies
+    # anything outside the public 0-100 / 0-50 G/l ranges, so -1.0 in an operand can only mean
+    # encode_missing_as_sentinel already ran. Left alone it would enter the model as a
+    # plausible-looking ratio (-1.0 / 2.0 = -0.5) instead of missing data.
+    encoded = [name for name, counts in ((NEUTROPHILS, neutrophils), (LYMPHOCYTES, lymphocytes))
+               if (counts == MISSING_SENTINEL).any()]
+    if encoded:
+        raise ValueError(
+            f"cannot derive {DERIVED_COLS}: {encoded} already carry the missing sentinel "
+            f"({MISSING_SENTINEL}) — add_derived_features must run on the raw delivered "
+            f"values, BEFORE encode_missing_as_sentinel (see resolve_run_split)."
+        )
+
+    # Missing rule: every operand must be a real count, and a lymphocyte count of 0 gives no
+    # ratio rather than an infinite one -> NaN in, NaN out, handled downstream as "not recorded".
     data[NLR] = neutrophils / lymphocytes.where(lymphocytes > 0)
     return data
 
