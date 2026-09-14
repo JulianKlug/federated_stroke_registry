@@ -67,6 +67,7 @@ EHR_LABELS = {
     "globules_blancs": "G/l", "neutrophiles_nb_abs": "G/l", "lymphocytes_nb_abs": "G/l",
     "crp": "mg/l", "inr": None, "fibrinogene": "g/l", "d_dimeres": "ng/ml", "hba1c": "%",
     "alat": "U/l", "ldl_calc": "mmol/l", "creatinine": "µmol/l", "uree": "mmol/l",
+    "gcs": None,
 }
 
 
@@ -724,7 +725,7 @@ def test_wide_to_frozen_end_to_end(capsys):
     assert rep["n_columns_checked"] == 27                  # 41 features - 15 binaries + mrs_3m
     assert rep["columns"]["heart_rate"]["n_assumed_unit"] == 1
     assert rep["columns"]["d_dimer"]["factors_applied"] == {"mg/L": 1000.0}
-    assert rep["columns"]["GCS"]["unit_source"] == "declared"
+    assert rep["columns"]["GCS"]["unit_source"] == "per_row"   # EHR scale file, unitless score
     assert rep["columns"]["mrs_3m"]["labels_seen"] == {"mRS": 4}
     json.dumps(rep)
     oor = out.attrs["out_of_range"]

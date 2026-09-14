@@ -59,7 +59,6 @@ GVA_REGISTRY_NUMERIC_COLS: tuple[str, ...] = (
     "1st diast. bp",
     "NIH on admission",
     "1st glucose",
-    "GCS on admission",
     "ODT",
     "ONT",
     "DNT",
@@ -67,7 +66,7 @@ GVA_REGISTRY_NUMERIC_COLS: tuple[str, ...] = (
     "3M mRS",
 )
 GVA_DECLARED_UNITS: dict[str, str] = {c: UNITS[c] for c in GVA_REGISTRY_NUMERIC_COLS}
-# -> years, mRS, mmHg, mmHg, NIHSS points, mmol/L, GCS points, min, min, min, min, mRS
+# -> years, mRS, mmHg, mmHg, NIHSS points, mmol/L, min, min, min, min, mRS
 
 # --- import-time consistency (loud) ---------------------------------------------------
 assert set(GVA_BINARY_ENCODINGS) <= set(GVA_TO_FROZEN), "encoded columns must be mapped"

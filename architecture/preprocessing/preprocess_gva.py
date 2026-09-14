@@ -76,10 +76,12 @@ from preprocessing.case_ids import (  # noqa: E402
 from preprocessing.first_values import (  # noqa: E402
     LAB_FILE_PREFIX,
     PV_FILE_PREFIX,
+    SCALE_FILE_PREFIX,
     assemble_wide,
     extract_lab_dosage_first_values,
     extract_pv_lab_first_values,
     extract_pv_vital_first_values,
+    extract_scale_first_values,
     load_concat_csvs,
 )
 from preprocessing.frozen_table import (  # noqa: E402
@@ -283,7 +285,7 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path, pseudonym_key: by
 
     Input:
         registry_xlsx: the Geneva stroke-registry export (.xlsx).
-        ehr_dir: the EHR extraction directory (patientvalue + lab CSVs).
+        ehr_dir: the EHR extraction directory (patientvalue + lab + scale CSVs).
         pseudonym_key: the data provider's key (>= 32 random bytes; main() reads
             --pseudonym-key). Never logged, never stamped — only its fingerprint.
     Output:
@@ -327,10 +329,16 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path, pseudonym_key: by
     lab_df[RAW_ID_COL] = create_ehr_case_identification_column(lab_df)
     print(f"[load]   lab rows={len(lab_df)}")
 
+    print(f"[load]   scale files ({SCALE_FILE_PREFIX}*.csv) from {ehr_dir}")
+    scale_df = load_concat_csvs(ehr_dir, SCALE_FILE_PREFIX)
+    scale_df[RAW_ID_COL] = create_ehr_case_identification_column(scale_df)
+    print(f"[load]   scale rows={len(scale_df)}")
+
     per_var: dict[str, pd.DataFrame] = {}
     per_var.update(extract_pv_vital_first_values(pv_df, df))
     per_var.update(extract_pv_lab_first_values(pv_df, df))
     per_var.update(extract_lab_dosage_first_values(lab_df, df))
+    per_var.update(extract_scale_first_values(scale_df, df))
 
     wide_df = assemble_wide(df, per_var)
     frozen = wide_to_frozen(wide_df)
@@ -344,7 +352,8 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path, pseudonym_key: by
     # build log: cohort exclusion stages, outcome availability, nulled values, unit check
     frozen.attrs["exclusions"] = exclusions
     text = assemble_build_log(frozen, registry_xlsx, ehr_dir,
-                              ehr_rows={PV_FILE_PREFIX: len(pv_df), LAB_FILE_PREFIX: len(lab_df)})
+                              ehr_rows={PV_FILE_PREFIX: len(pv_df), LAB_FILE_PREFIX: len(lab_df),
+                                        SCALE_FILE_PREFIX: len(scale_df)})
     path = write_build_log(log_path if log_path is not None else DEFAULT_BUILD_LOG, text)
     frozen.attrs["build_log_path"] = str(path)
     print(f"[log] build log written to {path}")
@@ -355,10 +364,10 @@ def build_frozen_gva_table(registry_xlsx: Path, ehr_dir: Path, pseudonym_key: by
 
 def hash_inputs(registry_xlsx: Path, ehr_dir: Path) -> dict[str, str]:
     """{label: sha256} of every input file the build read — the registry export and each
-    patientvalue*.csv / lab*.csv under the EHR extraction dir (the selection
+    patientvalue*.csv / lab*.csv / scale*.csv under the EHR extraction dir (the selection
     first_values.load_concat_csvs makes). Stamped into the node parquet for audit (B F8)."""
     hashes = {f"registry/{Path(registry_xlsx).name}": sha256_of(Path(registry_xlsx))}
-    for prefix in (PV_FILE_PREFIX, LAB_FILE_PREFIX):
+    for prefix in (PV_FILE_PREFIX, LAB_FILE_PREFIX, SCALE_FILE_PREFIX):
         for f in sorted(Path(ehr_dir).iterdir()):
             if f.is_file() and f.name.startswith(prefix) and f.name.endswith(".csv"):
                 hashes[f"ehr/{f.name}"] = sha256_of(f)
@@ -370,7 +379,7 @@ def main() -> None:
     parser.add_argument("--registry", type=Path, required=True,
                         help="Geneva stroke-registry .xlsx")
     parser.add_argument("--ehr-dir", type=Path, required=True,
-                        help="EHR extraction dir (patientvalue + lab CSVs)")
+                        help="EHR extraction dir (patientvalue + lab + scale CSVs)")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "out" / "gva_frozen.parquet",
                         help="the GVA node's parquet (node_config data-path)")
     parser.add_argument("--log", type=Path, default=None,

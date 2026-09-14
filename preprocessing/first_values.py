@@ -3,12 +3,14 @@
 Registry patients are matched to EHR rows via ``case_admission_id``
 (``patient_id_EDS_last_4_digits``) — see ``preprocessing.case_ids``.
 
-Two EHR sources are scanned per admission:
+Three EHR sources are scanned per admission:
   - patientvalue (PV) CSVs: vital signs (pv.pulse, pv.fr, pv.temperature) and
     a subset of labs encoded as ``lab.result.sang.*`` with the value row at
     ``subkey == 'Valeur'``.
   - lab CSVs: dedicated labs keyed by ``dosage_label`` (lymphocytes,
     fibrinogène, HbA1c, ALAT, LDL, cystatine C, urates, urée, homocystéine).
+  - scale CSVs: nurse-recorded clinical scores keyed by ``scale`` (the Glasgow
+    coma scale) — the registry's 'GCS on admission' is never filled in.
 
 "First after admission" = earliest record whose timestamp is >= the
 ``Arrival at hospital`` date in the registry (date-only granularity, so the
@@ -60,12 +62,26 @@ LAB_DOSAGES: list[tuple[str, list[str]]] = [
     ("homocysteine",       ["homocystéine"]),
 ]
 
-# ``DD.MM.YYYY HH:MM`` — used by both PV ``datetime`` and lab ``sample_date``.
+# Clinical scores from the scale file, keyed by ``scale`` (labels whitespace-normalised).
+# The Glasgow coma scale is recorded on four differently-named nursing forms — bare, with
+# pupils, with pupils and motor response, and an 'urgence' variant — that all put the same
+# 3-15 total in ``score``, so they merge into one variable. This is the ONLY GCS source:
+# the registry's 'GCS on admission' is 100 % empty and no patientvalue key carries it.
+SCALE_SCORES: list[tuple[str, list[str]]] = [
+    ("gcs", ["Glasgow",
+             "Glasgow + pupilles",
+             "Glasgow + pupilles + sensibilité/motricité",
+             "Glasgow urgence"]),
+]
+
+# ``DD.MM.YYYY HH:MM`` — used by the PV ``datetime``, the lab ``sample_date`` and the
+# scale ``event_date``.
 EHR_DATETIME_FORMAT = "%d.%m.%Y %H:%M"
 
-# Filename prefixes of the two EHR sources inside an extraction directory.
+# Filename prefixes of the three EHR sources inside an extraction directory.
 PV_FILE_PREFIX = "patientvalue"   # patientvalue*.csv: vitals + lab.result.sang.* labs
 LAB_FILE_PREFIX = "lab"           # lab*.csv: labs keyed by dosage_label
+SCALE_FILE_PREFIX = "scale"       # scale*.csv: clinical scores keyed by scale
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +280,42 @@ def extract_lab_dosage_first_values(
         unit_col = "unit_of_measure" if "unit_of_measure" in sub.columns else None
         results[out_name] = _earliest_after_admission(
             sub, cohort, "value_num", "sample_date_parsed", unit_col
+        )
+    return results
+
+
+def _normalize_scale_label(series: pd.Series) -> pd.Series:
+    """Collapse whitespace runs and trim, so the nursing forms' stray spaces
+    (``'Glasgow  urgence '``) match a single declared label."""
+    return series.astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+
+
+def extract_scale_first_values(
+    scale_df: pd.DataFrame, cohort: pd.DataFrame
+) -> dict[str, pd.DataFrame]:
+    """For each clinical score in the scale file, return first-value frame.
+
+    The scale file carries no unit column: a score is unitless by construction, so
+    ``first_unit`` stays empty and the frozen unit check reads it as 'no unit'.
+    Implausible totals (the handful of 0.0 the nursing forms carry) are left alone
+    here — ``frozen_table.nullify_out_of_range`` nulls them against the public 3-15
+    range, next to every other feature.
+    """
+    results: dict[str, pd.DataFrame] = {}
+    labels_norm = _normalize_scale_label(scale_df["scale"])
+    for out_name, scale_labels in SCALE_SCORES:
+        sub = scale_df[labels_norm.isin(scale_labels)].copy()
+        if sub.empty:
+            results[out_name] = _earliest_after_admission(
+                pd.DataFrame(), cohort, "score_num", "event_date_parsed", None
+            )
+            continue
+        sub["score_num"] = _coerce_numeric(sub["score"])
+        sub["event_date_parsed"] = pd.to_datetime(
+            sub["event_date"], format=EHR_DATETIME_FORMAT, errors="coerce"
+        )
+        results[out_name] = _earliest_after_admission(
+            sub, cohort, "score_num", "event_date_parsed", None
         )
     return results
 
