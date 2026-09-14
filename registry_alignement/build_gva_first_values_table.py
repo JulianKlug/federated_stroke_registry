@@ -36,6 +36,7 @@ from preprocessing.first_values import (  # noqa: E402
     extract_lab_dosage_first_values,
     extract_pv_lab_first_values,
     extract_pv_vital_first_values,
+    extract_scale_first_values,
     load_concat_csvs,
 )
 from preprocessing.registry_cohort import parse_yyyymmdd, preprocess  # noqa: E402
@@ -88,12 +89,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--ehr-dir", required=True,
-        help="Directory containing patientvalue*.csv and labo*.csv extractions.",
+        help="Directory containing patientvalue*.csv, labo*.csv and scale*.csv extractions.",
     )
     parser.add_argument("--output-dir", default=".")
     parser.add_argument("--output-name", default="gva_first_values_after_admission.csv")
     parser.add_argument("--vitals-prefix", default="patientvalue")
     parser.add_argument("--lab-prefix", default="labo")
+    parser.add_argument("--scale-prefix", default="scale")
     args = parser.parse_args()
 
     registry_path = Path(args.registry)
@@ -118,10 +120,16 @@ def main() -> None:
     lab_df["case_admission_id"] = create_ehr_case_identification_column(lab_df)
     print(f"[load]   lab rows={len(lab_df)}")
 
+    print(f"[load]   scale files ({args.scale_prefix}*.csv) from {ehr_dir}")
+    scale_df = load_concat_csvs(ehr_dir, args.scale_prefix)
+    scale_df["case_admission_id"] = create_ehr_case_identification_column(scale_df)
+    print(f"[load]   scale rows={len(scale_df)}")
+
     per_var: dict[str, pd.DataFrame] = {}
     per_var.update(extract_pv_vital_first_values(vitals_df, cohort))
     per_var.update(extract_pv_lab_first_values(vitals_df, cohort))
     per_var.update(extract_lab_dosage_first_values(lab_df, cohort))
+    per_var.update(extract_scale_first_values(scale_df, cohort))
 
     for var, frame in per_var.items():
         n_with = int(frame["case_admission_id"].nunique()) if not frame.empty else 0

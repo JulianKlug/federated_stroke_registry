@@ -55,8 +55,8 @@ def encode_missing_as_sentinel(data):
     a DP-only encoding would confound the A→B→C comparison (spec 1.1.a″ R9) with a missingness
     difference. Idempotent (the sentinel is not NaN). Registry reality this handles: the
     example halves carried ~4.5% missing NIHSS; before this, the DP learner silently binned
-    NaN into the TOP bin (max-NIHSS artifact). On the real frozen table several labs are
-    mostly missing (GCS entirely), so every one of the 41 columns goes through here.
+    NaN into the TOP bin (max-NIHSS artifact). On the real frozen table several columns are
+    largely missing (d-dimer 91%, GCS 19%), so every one of the 41 columns goes through here.
 
     Fails loudly if a frozen column is absent: a table missing a FEATURE_COLS entry is a
     schema-contract violation (preprocess_gva.validate_frozen_columns guarantees the full

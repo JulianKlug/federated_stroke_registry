@@ -251,7 +251,7 @@ GVA_TO_FROZEN: dict[str, str] = {
     "1st diast. bp": "diastolic_blood_pressure",  # mmHg
     "NIH on admission": "NIHSS",  # no unit
     "1st glucose": "glucose",  # mmol/L
-    "GCS on admission": "GCS",  # no unit
+    "gcs_first_value": "GCS",  # no unit
     "globules_blancs_first_value": "white_blood_cell_count",  # G/l
     "neutrophiles_nb_abs_first_value": "neutrophil_count",  # G/l
     "lymphocytes_nb_abs_first_value": "lymphocyte_count",  # G/l

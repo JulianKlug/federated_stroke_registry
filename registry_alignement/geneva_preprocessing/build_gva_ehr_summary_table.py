@@ -49,6 +49,7 @@ from registry_alignement.build_gva_summary_table import (  # noqa: E402
 EHR_TO_REGISTRY: dict[str, str] = {
     "creatinine":  "1st creatinine",
     "ldl_calc":    "1st cholesterol LDL",
+    "gcs":         "GCS on admission",
 }
 
 VALUE_SUFFIX = "_first_value"
