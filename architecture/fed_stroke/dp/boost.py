@@ -46,7 +46,11 @@ from fed_stroke.schema import FEATURE_COLS, MISSING_SENTINEL, is_binary_feature
 # interpretable against the OLD column order; scored on 41-column X it would silently read
 # column 1 (sex) as NIHSS. The bump (plus the width check in _binize) makes v2 artifacts fail
 # LOUDLY at load. No v2 artifact was ever trained on frozen-schema data.
-DP_MODEL_FORMAT = "dp-gbdt-v3"
+# v4 (2026-09-14): the model's feature set grew 41 → 42 — schema.DERIVED_COLS adds `nlr`
+# (neutrophil-to-lymphocyte ratio, computed at load by task.add_derived_features). A v3
+# artifact carries 41 feature_ranges and tree feature indices into a 42-column X; the bump
+# makes it fail LOUDLY at load rather than predict through a grid one column short.
+DP_MODEL_FORMAT = "dp-gbdt-v4"
 
 # Sensitivity constants (§3.2). L2 drives the Gaussian arm, L1 the Laplace arm.
 # For binary:logistic, per-example g = p − y ∈ [−1, 1] and h = p(1−p) ∈ (0, 0.25], so
@@ -109,6 +113,8 @@ FEATURE_RANGES = {
     "OPT": (0.0, 2880.0),                       # min — onset-to-puncture, capped at 48 h
     "IVT": (0.0, 1.0),                          # binary
     "EVT": (0.0, 1.0),                          # binary
+    # derived (schema.DERIVED_COLS), computed at load — not a column of the node parquet
+    "nlr": (0.0, 100.0),                        # ratio — neutrophils / lymphocytes
 }
 assert list(FEATURE_RANGES) == list(FEATURE_COLS), \
     "FEATURE_RANGES must mirror fed_stroke.schema.FEATURE_COLS — same keys, same ORDER"

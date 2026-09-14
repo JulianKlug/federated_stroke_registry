@@ -438,3 +438,25 @@
   - **Open for us:** D3 all-NaN feature column policy (untested today through
     `finalize_frozen_table` → `smoke_report`'s `allow_nan=False`), D5 the label, and W13 — no
     script compares two smoke reports against the roadmap's divergence gates yet.
+
+- 2026-09-14 — **NLR added as the first DERIVED feature; model feature set 41 → 42.**
+  Neutrophil-to-lymphocyte ratio (`nlr` = `neutrophil_count / lymphocyte_count`), a stroke
+  prognostic marker XGBoost cannot express as an axis-parallel split of the two counts. Both
+  centers already deliver both counts in G/l, so the ratio is unit-free and needs no
+  site-specific handling.
+  - **Computed at LOAD, not in the site preprocessing.** `fed_stroke.schema.FEATURE_COLS` is
+    now `DELIVERED_COLS` (the unchanged 41-column mirror of `FROZEN_FEATURES`) + `DERIVED_COLS`
+    (`nlr`); `task.add_derived_features` computes it at the top of `resolve_run_split`. Same
+    discipline as the label: a modelling decision lives in the wheel BOTH sites run, so the two
+    centers compute it identically by construction — no Geneva parquet rebuild, no Shenzhen
+    re-mapping, no `SCHEMA_VERSION` bump, no partner sign-off. `frozen-v2` still stands; the
+    frozen contract is untouched.
+  - Placement is load-bearing: `generate_splits` runs twice in the hold-out modes and its
+    sentinel encoding rewrites a missing count as `MISSING_SENTINEL`, so deriving there would
+    read −1/−1 as a ratio of 1.0. Lymphocyte count 0 → NaN (no ratio), never ±inf.
+  - `DP_MODEL_FORMAT` `dp-gbdt-v3` → `v4`: a v3 artifact's 41 feature_ranges and tree feature
+    indices are not interpretable against 42-column X. `FEATURE_RANGES["nlr"] = (0, 100)`.
+  - Real-data check (Geneva halves, inside-boundary): median NLR 3.4 / p95 15.3 / max 79.6,
+    zero lymphocyte counts none, 39–42 % missing (driven by `neutrophil_count` availability).
+    Quick pooled XGB on half A: valid AUC 0.837, `nlr` 8th of 30 used features by gain.
+  - Tests: `tests/test_derived_features.py` (6); suite 362 green.

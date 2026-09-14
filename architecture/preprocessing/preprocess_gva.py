@@ -134,7 +134,7 @@ def warn_if_architecture_schema_not_frozen() -> bool:
     loader can consume the parquet. A False here means fed_stroke.schema and
     preprocessing.mappings.frozen_schema were edited out of step.
     """
-    same = (list(arch_schema.FEATURE_COLS) == list(FROZEN_FEATURES)
+    same = (list(arch_schema.DELIVERED_COLS) == list(FROZEN_FEATURES)
             and list(arch_schema.OUTCOME_COLS) == list(FROZEN_OUTCOMES)
             and arch_schema.ID_COL == ID_COL)
     if not same:
@@ -144,8 +144,8 @@ def warn_if_architecture_schema_not_frozen() -> bool:
             "WARNING: architecture schema not yet frozen; loader cannot consume this parquet "
             "until fed_stroke.schema is expanded.\n"
             f"  fed_stroke.schema.ID_COL: {arch_schema.ID_COL!r} vs preprocessing ID_COL: {ID_COL!r}\n"
-            f"  fed_stroke.schema.FEATURE_COLS (n={len(arch_schema.FEATURE_COLS)}): "
-            f"{list(arch_schema.FEATURE_COLS)}\n"
+            f"  fed_stroke.schema.DELIVERED_COLS (n={len(arch_schema.DELIVERED_COLS)}): "
+            f"{list(arch_schema.DELIVERED_COLS)}\n"
             f"  preprocessing FROZEN_FEATURES  (n={len(FROZEN_FEATURES)}): "
             f"first={FROZEN_FEATURES[:3]} ... last={FROZEN_FEATURES[-3:]}\n"
             f"  fed_stroke.schema.OUTCOME_COLS: {list(arch_schema.OUTCOME_COLS)} vs "

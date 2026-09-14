@@ -8,6 +8,7 @@ import xgboost as xgb
 from flwr.app import Context
 
 from fed_stroke.schema import (
+    DERIVED_COLS,
     FEATURE_COLS,
     ID_COL,
     MISSING_SENTINEL,
@@ -16,6 +17,11 @@ from fed_stroke.schema import (
     TARGET_RULE,
     label_id,
 )
+
+# The neutrophil-to-lymphocyte ratio and its two operands (schema.DELIVERED_COLS). Both counts
+# are G/l at every site (schema.FEATURE_UNITS), so the ratio is unit-free and comparable across
+# cohorts without any site-specific rescaling.
+NLR, NEUTROPHILS, LYMPHOCYTES = "nlr", "neutrophil_count", "lymphocyte_count"
 
 # The patient-disjoint hold-out partition is pinned to a FIXED seed, deliberately
 # NOT a config key: it must never vary, or the HELD patient set would shift between
@@ -74,6 +80,37 @@ def encode_missing_as_sentinel(data):
         )
     for col in FEATURE_COLS:
         data[col] = data[col].fillna(MISSING_SENTINEL)
+    return data
+
+
+def add_derived_features(data):
+    """Compute schema.DERIVED_COLS from the delivered columns — the model's feature engineering.
+
+    ONE implementation, shipped in the wheel BOTH sites run, so Geneva and Shenzhen compute the
+    same feature from the same inputs without either site re-running its preprocessing or the
+    frozen parquet contract changing. Always recomputed, never read from the parquet: a column
+    of that name already in the table is authoritative nowhere.
+
+    nlr = neutrophil_count / lymphocyte_count. A lymphocyte count of 0 gives no ratio rather
+    than an infinite one -> NaN, i.e. "not recorded", which the sentinel encoding then handles
+    like any other missing value. A missing operand propagates to NaN the same way.
+
+    Per-record and data-independent (each row's value depends only on that row), so the DP
+    adjacency argument is untouched — same standing as encode_missing_as_sentinel. Called ONCE
+    per load path, at the top of resolve_run_split: after encode_missing_as_sentinel has run,
+    a missing count reads as MISSING_SENTINEL and the ratio would silently become 1.0.
+    """
+    missing = [col for col in (NEUTROPHILS, LYMPHOCYTES) if col not in data.columns]
+    if missing:
+        raise ValueError(
+            f"cannot derive {DERIVED_COLS}: operand columns absent from the loaded table "
+            f"({missing}) — the site parquet must deliver the full frozen schema"
+        )
+
+    data = data.copy()
+    neutrophils = pd.to_numeric(data[NEUTROPHILS], errors="raise").astype("float64")
+    lymphocytes = pd.to_numeric(data[LYMPHOCYTES], errors="raise").astype("float64")
+    data[NLR] = neutrophils / lymphocytes.where(lymphocytes > 0)
     return data
 
 
@@ -259,7 +296,12 @@ def resolve_run_split(data, outcome, split_seed=42, holdout_frac=0.0,
     drops the rows without one before any dedup or split. Called exactly once per load path
     (the federated loader and baseline.split_half both enter here once), so an ordinal rule
     is never applied twice.
+
+    The derived features (schema.DERIVED_COLS) are computed here for the same reason: once per
+    load, on the raw delivered values — generate_splits runs twice in the hold-out modes and
+    its sentinel encoding would poison a second derivation.
     """
+    data = add_derived_features(data)
     data, _ = select_labelled_rows(data, outcome)
 
     if holdout_frac == 0.0:

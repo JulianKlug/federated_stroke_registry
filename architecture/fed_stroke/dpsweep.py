@@ -20,6 +20,7 @@ from fed_stroke.baseline import LoadedModel, split_half
 from fed_stroke.dp import DP_MODEL_FORMAT, DPBooster, per_site_tree_budget
 from fed_stroke.schema import FEATURE_COLS
 from fed_stroke.server_app import derive_num_rounds
+from fed_stroke.task import add_derived_features
 
 ARM_A = "A"          # stock xgb.train           (dp.enabled=false)
 ARM_B = "B"          # DP learner, identity      (no noise, no ε)
@@ -406,7 +407,9 @@ def cohort_stats(half_paths, split_seed) -> dict:
     stats = {}
     for path in half_paths:
         path = Path(path)
-        raw = pd.read_parquet(path)
+        # the derived features are not parquet columns; missingness is reported on the
+        # model's feature set, so derive them the way the loader does
+        raw = add_derived_features(pd.read_parquet(path))
         train_df, valid_df = split_half(path, split_seed=split_seed,
                                         holdout_frac=0.0, holdout_eval=False)
         pids = set(train_df["patient_id"]) | set(valid_df["patient_id"])

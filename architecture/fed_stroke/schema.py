@@ -1,12 +1,18 @@
 """fed_stroke: the frozen cross-site data contract, and the training label chosen on top of it.
 
-FEATURE_COLS / OUTCOME_COLS / FEATURE_UNITS are a LITERAL MIRROR of the shared preprocessing
+DELIVERED_COLS / OUTCOME_COLS are a LITERAL MIRROR of the shared preprocessing
 layer's frozen schema — `preprocessing/mappings/frozen_schema.py` (FROZEN_FEATURES /
-FROZEN_OUTCOMES / FROZEN_UNITS), itself the verbatim copy of frozen_feature_names.xlsx. They
+FROZEN_OUTCOMES), itself the verbatim copy of frozen_feature_names.xlsx. They
 are duplicated here on purpose: the fed_stroke wheel is built and shipped alone (hatch packages
 = ["fed_stroke"]) and runs in the Shenzhen container without the root `preprocessing` package.
 tests/test_preprocess_gva.py asserts the two copies are identical, and
 architecture/preprocessing/preprocess_gva.py warns loudly at build time if they drift.
+
+The MODEL's input is FEATURE_COLS = DELIVERED_COLS + DERIVED_COLS: features every site delivers
+in its node parquet, plus features computed FROM them at load time (task.add_derived_features).
+A derived feature is a modelling decision, not a data-delivery one — same discipline as the
+label below: it is decided HERE, computed once in the wheel BOTH sites run, and therefore
+needs no site preprocessing re-run and no change to the signed frozen contract.
 
 The node parquet carries every cohort admission with ALL outcome columns (NaN when not
 recorded). The LABEL is decided HERE and nowhere else: TARGET_COL names one frozen outcome
@@ -20,7 +26,8 @@ the DP bin grid per column index. Reordering silently remaps every persisted DP 
 
 Freeze discipline: any change to the mirrored lists or to ID_COL is a cross-site contract change —
 bump SCHEMA_VERSION here (and DP_MODEL_FORMAT in dp/boost.py when a FEATURE column moves or
-changes), and re-obtain partner sign-off.
+changes), and re-obtain partner sign-off. DERIVED_COLS is NOT part of that contract (the sites
+deliver the same parquet either way): adding one bumps DP_MODEL_FORMAT alone.
 """
 
 # Stamped into the node parquet metadata by preprocess_gva.write_node_parquet and compared by
@@ -37,7 +44,8 @@ SCHEMA_VERSION = "frozen-v2"
 # R4 split). The patient key is a keyed pseudonym, never a hospital identifier.
 ID_COL = "pseudo_admission_id"
 
-FEATURE_COLS = [
+# What each site delivers in its node parquet — the mirror of FROZEN_FEATURES, in its order.
+DELIVERED_COLS = [
     "age",
     "sex",
     "wake_up_stroke",
@@ -81,6 +89,19 @@ FEATURE_COLS = [
     "EVT",
 ]
 
+# Computed from DELIVERED_COLS at load time by task.add_derived_features — never read from the
+# node parquet, so a site that delivers the operands delivers the feature. APPENDED after the
+# delivered block so the delivered columns keep their frozen index (column j of X stays
+# DELIVERED_COLS[j]).
+#   nlr: neutrophil_count / lymphocyte_count — the neutrophil-to-lymphocyte ratio, a stroke
+#   prognostic marker XGBoost cannot express as an axis-parallel split of the two counts.
+DERIVED_COLS = [
+    "nlr",
+]
+
+# The model's input contract: X columns, in this order (see load_data_arrays / FEATURE_RANGES).
+FEATURE_COLS = [*DELIVERED_COLS, *DERIVED_COLS]
+
 # Standardized raw outcome variables every site delivers as columns (mirror of FROZEN_OUTCOMES).
 # Not labels: NaN when not recorded, no row dropped by the preprocessing.
 OUTCOME_COLS = [
@@ -120,7 +141,7 @@ def label_id() -> str:
 # dp/boost.FEATURE_RANGES is expressed in them — a feature arriving in other units silently
 # lands in the wrong DP bins. 'binary (...)' / 'no unit (...)' document an encoding convention
 # both sites must reproduce (sex: 1 = female). Mirrors preprocessing.mappings.frozen_schema.
-# FROZEN_UNITS, outcomes included.
+# FROZEN_UNITS, outcomes included, plus the DERIVED_COLS entries that contract does not carry.
 FEATURE_UNITS = {
     "age": "years",
     "sex": "binary (1 = female)",
@@ -163,12 +184,15 @@ FEATURE_UNITS = {
     "OPT": "min",
     "IVT": "binary",
     "EVT": "binary",
+    # derived (DERIVED_COLS) — both counts are G/l, so the ratio is unit-free
+    "nlr": "no unit (neutrophil count / lymphocyte count)",
     # outcomes
     "mrs_3m": "no unit (mRS 0-6; 6 = dead)",
     "death_3m": "binary (1 = death by 3 months)",
     "death_in_hospital": "binary (1 = died during the index admission)",
 }
-assert len(FEATURE_COLS) == 41 == len(set(FEATURE_COLS)), "FEATURE_COLS: 41 unique frozen names"
+assert len(DELIVERED_COLS) == 41 == len(set(DELIVERED_COLS)), "DELIVERED_COLS: 41 unique frozen names"
+assert not set(DELIVERED_COLS) & set(DERIVED_COLS), "a derived feature is never also delivered"
 assert not set(FEATURE_COLS) & set(OUTCOME_COLS), "an outcome is never also a feature"
 assert set(FEATURE_UNITS) == {*FEATURE_COLS, *OUTCOME_COLS}, "FEATURE_UNITS must cover the schema"
 assert TARGET_COL in OUTCOME_COLS, "the label must be one of the frozen outcome columns"

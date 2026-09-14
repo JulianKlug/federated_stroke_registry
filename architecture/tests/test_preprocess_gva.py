@@ -744,7 +744,7 @@ def test_warn_if_architecture_schema_not_frozen(capsys, monkeypatch):
     assert preprocess_gva.warn_if_architecture_schema_not_frozen() is True
     assert capsys.readouterr().err == ""
     # a drift between the two copies of the contract is what the banner is for
-    monkeypatch.setattr(preprocess_gva.arch_schema, "FEATURE_COLS", list(FROZEN_FEATURES[:2]))
+    monkeypatch.setattr(preprocess_gva.arch_schema, "DELIVERED_COLS", list(FROZEN_FEATURES[:2]))
     assert preprocess_gva.warn_if_architecture_schema_not_frozen() is False
     assert "not yet frozen" in capsys.readouterr().err
 
@@ -755,21 +755,26 @@ def test_architecture_schema_mirrors_frozen_contract():
     """fed_stroke.schema is a literal copy of the preprocessing-side contract (the wheel ships
     without the root package); this is the test that keeps the two copies identical."""
     from fed_stroke.dp.boost import FEATURE_RANGES
-    from fed_stroke.schema import (FEATURE_COLS, FEATURE_UNITS, MISSING_SENTINEL, OUTCOME_COLS,
-                                   SCHEMA_VERSION, TARGET_COL)
+    from fed_stroke.schema import (DELIVERED_COLS, DERIVED_COLS, FEATURE_COLS, FEATURE_UNITS,
+                                   MISSING_SENTINEL, OUTCOME_COLS, SCHEMA_VERSION, TARGET_COL)
     from fed_stroke.schema import ID_COL as ARCH_ID_COL
-    assert list(FEATURE_COLS) == FROZEN_FEATURES
+    assert list(DELIVERED_COLS) == FROZEN_FEATURES
     assert list(OUTCOME_COLS) == FROZEN_OUTCOMES
     assert ARCH_ID_COL == ID_COL == ID                # the de-identified id column, both copies
     assert TARGET_COL in FROZEN_OUTCOMES              # the label is one of the carried outcomes
-    assert FEATURE_UNITS == FROZEN_UNITS
+    # the derived features ride on top of the site contract, never inside it: the parquet the
+    # sites deliver is the same with or without them
+    assert list(FEATURE_COLS) == [*FROZEN_FEATURES, *DERIVED_COLS]
+    assert not set(DERIVED_COLS) & set(FROZEN_UNITS)
+    assert {k: FEATURE_UNITS[k] for k in FROZEN_UNITS} == FROZEN_UNITS
+    assert set(FEATURE_UNITS) == {*FROZEN_UNITS, *DERIVED_COLS}
     assert preprocess_gva.SCHEMA_VERSION == SCHEMA_VERSION == FROZEN_SCHEMA_VERSION
     # DP bin grid: same keys in the same ORDER (column index == feature), every lower bound
     # above the missing sentinel, binaries exactly (0, 1) — and the preprocessing-side mirror
     # FROZEN_RANGES is identical, pair for pair and in order (edit both copies together)
-    assert list(FEATURE_RANGES) == FROZEN_FEATURES
-    assert list(FROZEN_RANGES.items()) == list(FEATURE_RANGES.items())
+    assert list(FEATURE_RANGES) == [*FROZEN_FEATURES, *DERIVED_COLS]
+    assert list(FROZEN_RANGES.items()) == list(FEATURE_RANGES.items())[:len(FROZEN_FEATURES)]
     for name, (lo, hi) in FEATURE_RANGES.items():
         assert MISSING_SENTINEL < lo < hi, name
-        if is_binary_unit(FROZEN_UNITS[name]):
+        if is_binary_unit(FEATURE_UNITS[name]):
             assert (lo, hi) == (0.0, 1.0), name
