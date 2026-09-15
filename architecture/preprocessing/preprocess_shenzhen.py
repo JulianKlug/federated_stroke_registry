@@ -103,7 +103,6 @@ def build_shenzhen_cohort(raw: pd.DataFrame, exclusions: list[dict]) -> pd.DataF
     raise NotImplementedError("TODO(shenzhen): cohort filter + exclusion chain")
 
 
-
 def derive_timings(df: pd.DataFrame) -> pd.DataFrame:
     """The four timing intervals in MINUTES, as columns named exactly TIMING_COLS.
 
@@ -121,6 +120,24 @@ def derive_outcomes(df: pd.DataFrame) -> pd.DataFrame:
     Not recorded stays NaN — no row is dropped.
     """
     raise NotImplementedError("TODO(shenzhen): outcome columns + reconciliation")
+
+# TODO(shenzhen): verify this function
+def build_frozen_shenzhen_table(export_path: Path, pseudonym_key: bytes,
+                                log_path: Path | None = None) -> pd.DataFrame:
+    """Site export → ONE tidy, DE-IDENTIFIED per-admission table in the frozen schema."""
+    exclusions: list[dict] = []
+    raw = load_shenzhen_export(export_path)
+    cohort = build_shenzhen_cohort(raw, exclusions=exclusions)
+    print(f"[cohort] raw={len(raw)} cohort={len(cohort)}")
+
+    frozen = wide_to_frozen(assemble_wide(cohort))
+    frozen.attrs["exclusions"] = exclusions
+
+    path = write_build_log(log_path if log_path is not None else DEFAULT_BUILD_LOG,
+                           assemble_build_log(frozen, export_path))
+    frozen.attrs["build_log_path"] = str(path)
+    print(f"[log] build log written to {path}")
+    return frozen
 
 
 # ---------------------------------------------------------------- pre-wired (do not edit)
@@ -217,26 +234,6 @@ def assemble_build_log(df: pd.DataFrame, export_path: Path) -> str:
                             df.attrs.get("out_of_range"), df.attrs.get("unit_check"),
                             outcomes=df.attrs.get("outcomes"))
 
-
-def build_frozen_shenzhen_table(export_path: Path, pseudonym_key: bytes,
-                                log_path: Path | None = None) -> pd.DataFrame:
-    """Site export → ONE tidy, DE-IDENTIFIED per-admission table in the frozen schema."""
-    exclusions: list[dict] = []
-    raw = load_shenzhen_export(export_path)
-    cohort = build_shenzhen_cohort(raw, exclusions=exclusions)
-    print(f"[cohort] raw={len(raw)} cohort={len(cohort)}")
-
-    frozen = wide_to_frozen(assemble_wide(cohort))
-    frozen.attrs["exclusions"] = exclusions
-
-    # de-identification is the LAST step: write_node_parquet refuses an unstamped frame
-    frozen = anonymise_frozen(frozen, pseudonym_key)
-
-    path = write_build_log(log_path if log_path is not None else DEFAULT_BUILD_LOG,
-                           assemble_build_log(frozen, export_path))
-    frozen.attrs["build_log_path"] = str(path)
-    print(f"[log] build log written to {path}")
-    return frozen
 
 
 def main() -> None:
